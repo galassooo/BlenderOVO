@@ -635,15 +635,55 @@ def menu_func_export(self, context):
     self.layout.operator(OVO_PT_export_main.bl_idname, text="OverView Object (.ovo)")
 
 def register():
-    # on install -> (called by __main__) 
+    try:
+        bpy.utils.unregister_class(OVO_PT_export_main)
+        print("Operator già registrato, deregistrato prima di una nuova registrazione.")
+    except RuntimeError:
+        print("Operator non era registrato, procedo normalmente.")
+
     bpy.utils.register_class(OVO_PT_export_main)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
-    #on disinstall ->
-    bpy.utils.unregister_class(OVO_PT_export_main)
-    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    try:
+        bpy.utils.unregister_class(OVO_PT_export_main)
+        bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    except RuntimeError:
+        print("Operator non era registrato, skipping unregister.")
+
+
 
 if __name__ == "__main__":
+    #
+    #
+    # PER USARE VERAMENTE COME PLUGIN SOLO IL REGISTER VA CHIAMATO
+    #
     #call register function on install plugin
-    register()
+    #register()
+
+    #
+    #
+    #
+    register()  # Registra l'addon
+    print("Addon OVO registrato.")
+
+    # Prova a eseguire l'export direttamente
+    try:
+        import os
+
+        # Ottieni il percorso della cartella in cui si trova lo script attuale
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Crea un percorso relativo alla cartella dello script
+        output_path = os.path.join(script_dir, "bin", "output.ovo")
+
+        # Esegui l'export con il percorso relativo
+        bpy.ops.export_scene.ovo(filepath=output_path)
+        print(f"Export completato con successo! File salvato in: {output_path}")
+
+    except Exception as e:
+        print(f"Errore durante l'export: {e}")
+
+    # Deregistra l'addon dopo l'export
+    unregister()
+    print("Addon OVO deregistrato.")
