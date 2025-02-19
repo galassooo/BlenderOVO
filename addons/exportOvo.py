@@ -1,4 +1,6 @@
 # cose per blender
+import numpy as np
+
 bl_info = {
     "name": "OVO Format Exporter",
     "author": "Martina Galasso",
@@ -14,6 +16,7 @@ import bpy
 import struct
 import mathutils
 import math
+import numpy
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty
 from bpy.types import Operator
@@ -66,37 +69,54 @@ class OVO_Exporter:
     def pack_vector3(self, vector):
         # impacchetta vettore generico
         return struct.pack('3f', vector.x, vector.y, vector.z)
-    
+
     def pack_normal(self, normal):
         """
-        Comprime una normale nel formato 10-10-10-2 per essere compatibile con unpackSnorm3x10_1x2
+        Implementa il reverse della funzione GLM unpackSnorm3x10_1x2.
+        La funzione originale GLM prende un uint32 e restituisce un vec4 con valori normalizzati,
+        quindi noi dobbiamo fare l'opposto.
         """
-        # Normalizza il vettore
-        normal = normal.normalized()
-        
-        # Mappa i componenti da [-1,1] a [-511,511]
+        # Normalizza i valori da [-1,1] a [-511,511]
         x = int(normal.x * 511.0)
         y = int(normal.y * 511.0)
         z = int(normal.z * 511.0)
-        w = 0  # w usa solo 2 bit
-        
-        # Gestisci i valori negativi (two's complement)
-        x &= 0x3FF  # 10 bits
-        y &= 0x3FF  # 10 bits
-        z &= 0x3FF  # 10 bits
-        w &= 0x3    # 2 bits
-        
-        # Pack nel formato corretto
-        packed = (w << 30) | (z << 20) | (y << 10) | x
-        #(x <<22) | (y << 12) | (z)
-        
+        w = 0
+
+        # Assicurati che i valori siano nel range corretto
+        x = max(min(x, 511), -512)
+        y = max(min(y, 511), -512)
+        z = max(min(z, 511), -512)
+        w = max(min(w, 1), -2)
+
+        # Converti in rappresentazione a 10 bit
+        x &= 0x3FF
+        y &= 0x3FF
+        z &= 0x3FF
+        w &= 0x3
+
+        # Pack come nella struttura i10i10i10i2 di GLM
+        packed = x | (z << 10) | (y << 20) | (w << 30)
+
         return struct.pack('I', packed)
-    
+
     def pack_uv(self, uv):
-        # pack uv as integer -> 32 bits 16 u e 16 v
-        u = int(uv.x * 65535)
-        v = int(uv.y * 65535)
-        return struct.pack('I', (u << 16) | v)
+        """
+        Pack UV coordinates to match GLM's unpackHalf2x16 byte order
+        """
+        # Converti da [0,1] a [0,65535]
+        u_int = int(max(0.0, min(1.0, uv.x)) * 65535)
+        v_int = int(max(0.0, min(1.0, uv.y)) * 65535)
+
+        # Scambia l'ordine rispetto alla versione precedente
+        packed = (v_int & 0xFFFF) | ((u_int & 0xFFFF) << 16)
+
+        # Inverti i byte per match l'endianness di GLM
+        packed_bytes = struct.pack('I', packed)
+        swapped_packed = struct.unpack('I', packed_bytes[::-1])[0]
+
+        print(f"DEBUG - UV: ({uv.x}, {uv.y}) -> u_int: {u_int}, v_int: {v_int}, packed: {hex(swapped_packed)}")
+
+        return struct.pack('I', swapped_packed)
     
     def write_chunk_header(self, file, chunk_id, chunk_size):
         # write chunk id and size
@@ -393,10 +413,24 @@ class OVO_Exporter:
         
         # get UV layer
         uv_layer = mesh.uv_layers.active.data if mesh.uv_layers.active else None
-        
+
+        print("\nDEBUG UV COORDINATES:")
+        if uv_layer:
+            for i, uv_data in enumerate(uv_layer):
+                print(f"UV[{i}]: ({uv_data.uv.x}, {uv_data.uv.y})")
+
+        vert_uvs = {}
         # get vertex transform matrix for normal conversion
         normal_matrix = conversion_matrix.to_3x3().normalized()
-        
+        for face in bm.faces:
+            for loop in face.loops:
+                vert_index = loop.vert.index
+                if uv_layer:
+                    uv = uv_layer[loop.index].uv
+                    if vert_index not in vert_uvs:
+                        vert_uvs[vert_index] = []
+                    vert_uvs[vert_index].append(uv)
+
         # Write vertex data
         for vertex in bm.verts:
             #posizione in LOCALE
@@ -414,13 +448,14 @@ class OVO_Exporter:
                     if vertex in face.verts:
                         loop_index = face.loops[list(face.verts).index(vertex)].index
                         uv = uv_layer[loop_index].uv
+                        print(f"Vertex {vertex.index} UV: ({uv.x}, {uv.y})")
+
+                        # Debug del valore packed
+                        packed_value = self.pack_uv(uv)
+                        unpacked = struct.unpack('I', packed_value)[0]
+                        print(f"Packed UV: {hex(unpacked)}")
                         found_uv = True
                         break
-                if not found_uv:
-                    uv = mathutils.Vector((0, 0))
-            else:
-                uv = mathutils.Vector((0, 0))
-            chunk_data += self.pack_uv(uv)
             
             # Tangente
             chunk_data += struct.pack('I', 0) #TODO chiedere
@@ -652,29 +687,24 @@ def unregister():
         print("Operator non era registrato, skipping unregister.")
 
 
-
 if __name__ == "__main__":
-    #
-    #
-    # PER USARE VERAMENTE COME PLUGIN SOLO IL REGISTER VA CHIAMATO
-    #
-    #call register function on install plugin
-    #register()
-
-    #
-    #
-    #
     register()  # Registra l'addon
     print("Addon OVO registrato.")
 
-    # Prova a eseguire l'export direttamente
     try:
         import os
 
         # Ottieni il percorso della cartella in cui si trova lo script attuale
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Crea un percorso relativo alla cartella dello script
+        # Specifica il percorso del file .blend da caricare
+        blend_path = os.path.join(script_dir, "scenes", "untitled.blend")
+
+        # Carica la scena
+        bpy.ops.wm.open_mainfile(filepath=blend_path)
+        print(f"Scena caricata da: {blend_path}")
+
+        # Crea un percorso relativo alla cartella dello script per l'output
         output_path = os.path.join(script_dir, "bin", "output.ovo")
 
         # Esegui l'export con il percorso relativo
@@ -684,6 +714,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Errore durante l'export: {e}")
 
-    # Deregistra l'addon dopo l'export
     unregister()
     print("Addon OVO deregistrato.")
