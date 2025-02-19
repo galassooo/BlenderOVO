@@ -72,51 +72,58 @@ class OVO_Exporter:
 
     def pack_normal(self, normal):
         """
-        Implementa il reverse della funzione GLM unpackSnorm3x10_1x2.
-        La funzione originale GLM prende un uint32 e restituisce un vec4 con valori normalizzati,
-        quindi noi dobbiamo fare l'opposto.
+        Pack a normal vector using 10-10-10-2 format compatible with glm::packSnorm3x10_1x2
         """
-        # Normalizza i valori da [-1,1] a [-511,511]
-        x = int(normal.x * 511.0)
-        y = int(normal.y * 511.0)
-        z = int(normal.z * 511.0)
-        w = 0
+        # Ensure the normal is normalized
+        normal = normal.normalized()
 
-        # Assicurati che i valori siano nel range corretto
-        x = max(min(x, 511), -512)
-        y = max(min(y, 511), -512)
-        z = max(min(z, 511), -512)
-        w = max(min(w, 1), -2)
+        def float_to_snorm10(f):
+            # Clamp to [-1, 1]
+            f = max(-1.0, min(1.0, f))
+            # Convert to [-511, 511] and handle sign
+            if f >= 0:
+                return int(f * 511.0 + 0.5)  # Added 0.5 for proper rounding
+            else:
+                return int(1024 + (f * 511.0 - 0.5))  # Adjusted for negative values
 
-        # Converti in rappresentazione a 10 bit
-        x &= 0x3FF
-        y &= 0x3FF
-        z &= 0x3FF
-        w &= 0x3
+        # Convert components
+        x = float_to_snorm10(normal.x)
+        y = float_to_snorm10(normal.y)
+        z = float_to_snorm10(normal.z)
 
-        # Pack come nella struttura i10i10i10i2 di GLM
-        packed = x | (z << 10) | (y << 20) | (w << 30)
+        # Pack mantaining GLM format
+        packed = x | (y << 10) | (z << 20)
 
-        return struct.pack('I', packed)
+        # Debug output
+        print(f"Normal: ({normal.x}, {normal.y}, {normal.z})")
+        print(f"Converted to 10-bit: x={x:03x}, y={y:03x}, z={z:03x}")
+        print(f"Final packed: 0x{packed:08x}")
+
+        return struct.pack('<I', packed)
 
     def pack_uv(self, uv):
-        """
-        Pack UV coordinates to match GLM's unpackHalf2x16 byte order
-        """
-        # Converti da [0,1] a [0,65535]
-        u_int = int(max(0.0, min(1.0, uv.x)) * 65535)
-        v_int = int(max(0.0, min(1.0, uv.y)) * 65535)
+        """Pack UV coordinates into format compatible with glm::unpackHalf2x16"""
+        # Target: 0x38003600 (939537920) for (0.375, 0.5)
+        import numpy as np
 
-        # Scambia l'ordine rispetto alla versione precedente
-        packed = (v_int & 0xFFFF) | ((u_int & 0xFFFF) << 16)
+        # Convert to half floats using numpy
+        u_half = np.float16(uv.x)
+        v_half = np.float16(uv.y)
 
-        # Inverti i byte per match l'endianness di GLM
-        packed_bytes = struct.pack('I', packed)
-        swapped_packed = struct.unpack('I', packed_bytes[::-1])[0]
+        # Get binary representation
+        u_bits = u_half.view(np.uint16)
+        v_bits = v_half.view(np.uint16)
 
-        print(f"DEBUG - UV: ({uv.x}, {uv.y}) -> u_int: {u_int}, v_int: {v_int}, packed: {hex(swapped_packed)}")
+        # Pack value - using little endian to match GLM's expectations
+        packed = (int(v_bits) << 16) | int(u_bits)
 
-        return struct.pack('I', swapped_packed)
+        # Debug output
+        print(f"UV: ({uv.x}, {uv.y})")
+        print(f"Half floats raw: u=0x{u_bits:04x}, v=0x{v_bits:04x}")
+        print(f"Final packed value: 0x{packed:08x}")
+
+        # Important: Use '<I' for little-endian packing
+        return struct.pack('<I', packed)
     
     def write_chunk_header(self, file, chunk_id, chunk_size):
         # write chunk id and size
@@ -419,46 +426,45 @@ class OVO_Exporter:
             for i, uv_data in enumerate(uv_layer):
                 print(f"UV[{i}]: ({uv_data.uv.x}, {uv_data.uv.y})")
 
-        vert_uvs = {}
+
         # get vertex transform matrix for normal conversion
         normal_matrix = conversion_matrix.to_3x3().normalized()
-        for face in bm.faces:
-            for loop in face.loops:
-                vert_index = loop.vert.index
-                if uv_layer:
-                    uv = uv_layer[loop.index].uv
-                    if vert_index not in vert_uvs:
-                        vert_uvs[vert_index] = []
-                    vert_uvs[vert_index].append(uv)
+
+        def transform_normal(normal):
+            """Transform normal from Blender to OpenGL coordinates"""
+            # Per le normali ci interessa solo la rotazione, non la traslazione
+            # Blender -> OpenGL:
+            # 1. Ruota 180° attorno a Z per invertire X
+            # 2. Ruota -90° attorno a X per allineare Y verso l'alto e Z lontano da noi
+            rot_z = mathutils.Matrix.Rotation(math.radians(-0), 3, 'Z')
+            rot_x = mathutils.Matrix.Rotation(math.radians(-0), 3, 'X')
+
+
+            # Applica le rotazioni nell'ordine corretto
+            transformed = rot_x @ rot_z @ normal
+
+            # Re-normalizza dopo la trasformazione
+            return transformed.normalized()
 
         # Write vertex data
         for vertex in bm.verts:
-            #posizione in LOCALE
-            pos = vertex.co
-            chunk_data += self.pack_vector3(pos)
-            
-            #transform normal to opengl 10 10 10 2 rev
-            normal = normal_matrix @ vertex.normal
-            chunk_data += self.pack_normal(normal)
-            
-            # UV coordinates
-            if uv_layer:
-                found_uv = False
-                for face in bm.faces:
-                    if vertex in face.verts:
-                        loop_index = face.loops[list(face.verts).index(vertex)].index
-                        uv = uv_layer[loop_index].uv
-                        print(f"Vertex {vertex.index} UV: ({uv.x}, {uv.y})")
+            # Vertex position
+            chunk_data += self.pack_vector3(vertex.co)
 
-                        # Debug del valore packed
-                        packed_value = self.pack_uv(uv)
-                        unpacked = struct.unpack('I', packed_value)[0]
-                        print(f"Packed UV: {hex(unpacked)}")
-                        found_uv = True
-                        break
-            
-            # Tangente
-            chunk_data += struct.pack('I', 0) #TODO chiedere
+            # Normal
+            transformed_normal = transform_normal(vertex.normal)
+            chunk_data += self.pack_normal(transformed_normal)
+
+            # UV coordinates - accesso diretto attraverso il loop
+            if uv_layer and vertex.link_loops:
+                # Prendi il primo loop associato al vertice
+                uv = uv_layer[vertex.link_loops[0].index].uv
+            else:
+                uv = mathutils.Vector((0, 0))
+            chunk_data += self.pack_uv(uv)
+
+            # Tangent
+            chunk_data += struct.pack('I', 0)
         
         for face in bm.faces:
             v0, v1, v2 = face.verts
