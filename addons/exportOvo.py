@@ -94,37 +94,18 @@ class OVO_Exporter:
         # Pack mantaining GLM format
         packed = x | (y << 10) | (z << 20)
 
-        # Debug output
-        print(f"Normal: ({normal.x}, {normal.y}, {normal.z})")
-        print(f"Converted to 10-bit: x={x:03x}, y={y:03x}, z={z:03x}")
-        print(f"Final packed: 0x{packed:08x}")
-
         return struct.pack('<I', packed)
 
     def pack_uv(self, uv):
-        """Pack UV coordinates into format compatible with glm::unpackHalf2x16"""
-        # Target: 0x38003600 (939537920) for (0.375, 0.5)
-        import numpy as np
-
-        # Convert to half floats using numpy
-        u_half = np.float16(uv.x)
-        v_half = np.float16(uv.y)
-
-        # Get binary representation
-        u_bits = u_half.view(np.uint16)
-        v_bits = v_half.view(np.uint16)
-
-        # Pack value - using little endian to match GLM's expectations
-        packed = (int(v_bits) << 16) | int(u_bits)
-
-        # Debug output
-        print(f"UV: ({uv.x}, {uv.y})")
-        print(f"Half floats raw: u=0x{u_bits:04x}, v=0x{v_bits:04x}")
-        print(f"Final packed value: 0x{packed:08x}")
-
-        # Important: Use '<I' for little-endian packing
+        import struct
+        # Valida e correggi le coordinate UV
+        uv.x = max(0.0, min(1.0, uv.x))
+        uv.y = max(0.0, min(1.0, uv.y))
+        u_half = struct.unpack('<H', struct.pack('<e', uv.x))[0]
+        v_half = struct.unpack('<H', struct.pack('<e', uv.y))[0]
+        packed = (v_half << 16) | u_half
         return struct.pack('<I', packed)
-    
+
     def write_chunk_header(self, file, chunk_id, chunk_size):
         # write chunk id and size
         file.write(struct.pack('2I', chunk_id, chunk_size))
@@ -348,143 +329,123 @@ class OVO_Exporter:
         # Write the chunk
         self.write_chunk_header(file, ChunkType.NODE, len(chunk_data))
         file.write(chunk_data)
-        
+
     def write_mesh_chunk(self, file, obj, num_children):
-        chunk_data = b'' #binario
+        chunk_data = b''
 
         # Mesh name
         chunk_data += self.pack_string(obj.name)
-        
 
-        #!!!!!!!!!!!!!! CONVERSIONE MATRICE MESH!!!!!!!!!!!!!!!!!!!
-        
-        #copia matrice mondo
+        # Matrix handling
         matrix_world = obj.matrix_world.copy()
-
-        # ruoto PRIMA di 180 su Z (inverto asse X) e POI di -90 su X (y verso alto positiva e z verso di me nagativo)
         conversion_matrix = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
         conversion_matrix2 = mathutils.Matrix.Rotation(math.radians(180), 4, 'Z')
-        # Apply conversion --AFTER-- world matrix 
-        final_matrix =  conversion_matrix @ conversion_matrix2 @ matrix_world #contiene gia scala, rotazione e posizione
-
-        #pack
+        final_matrix = conversion_matrix @ conversion_matrix2 @ matrix_world
         chunk_data += self.pack_matrix(final_matrix)
-        
-        # Number of children and target node
+
+        # Children and material data
         chunk_data += struct.pack('I', num_children)
         chunk_data += self.pack_string("[none]")
-        
-        # Mesh subtype (default = 0) 
-        chunk_data += struct.pack('B', 0) #TODO non so cosa mettere -> chiedi
-        
-        # material name
+        chunk_data += struct.pack('B', 0)
+
         if obj.material_slots and obj.material_slots[0].material:
             chunk_data += self.pack_string(obj.material_slots[0].material.name)
         else:
             chunk_data += self.pack_string("[none]")
-        
-        #triangola le facce x opengl
+
+        # Get mesh data
         depsgraph = bpy.context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
         mesh = obj_eval.to_mesh()
-        
+
+        # Create BMesh
         import bmesh
         bm = bmesh.new()
         bm.from_mesh(mesh)
-        # Prima triangola
-        
         bmesh.ops.triangulate(bm, faces=bm.faces)
 
-        # Poi uniforma l'orientamento delle facce
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-        
-        # calculate bounding box in world space
+        # Ensure lookup tables are updated
+        bm.verts.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+
+        # Get UV layer
+        uv_layer = bm.loops.layers.uv.active
+
+        # Collect UV data for vertex-face pairs
+        vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
+        vertices_data = []  # Lista finale dei vertici
+        vertex_map = {}  # Mappa (vertex_idx, uv_key) -> new_vertex_idx
+
+        print("\nAnalizzando mesh...")
+
+        # Collect UVs
+        for face in bm.faces:
+            for loop in face.loops:
+                vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
+
+        # Process vertices
+        for vert in bm.verts:
+            # Find unique UVs for this vertex
+            vert_uvs = set()
+            for face in vert.link_faces:
+                uv = vertex_face_uvs[(vert.index, face.index)]
+                vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
+
+            # Create a new vertex for each unique UV
+            for uv_key in vert_uvs:
+                new_idx = len(vertices_data)
+                # Trasforma la normale qui
+                transformed_normal = (vert.normal)
+                vertices_data.append((vert.co, transformed_normal, mathutils.Vector(uv_key)))
+                vertex_map[(vert.index, uv_key)] = new_idx
+
+        print(f"Processati {len(bm.verts)} vertici originali in {len(vertices_data)} vertici finali")
+
+        # Calculate bounding box in world space
         bbox_corners = [final_matrix @ mathutils.Vector(corner) for corner in obj.bound_box]
         min_box = mathutils.Vector(map(min, *((v.x, v.y, v.z) for v in bbox_corners)))
         max_box = mathutils.Vector(map(max, *((v.x, v.y, v.z) for v in bbox_corners)))
         radius = (max_box - min_box).length / 2
-        
-        # write bounding box information
+
+        # Write bounding box information
         chunk_data += struct.pack('f', radius)
         chunk_data += self.pack_vector3(min_box)
         chunk_data += self.pack_vector3(max_box)
-        
-        # physics flag (0 = no physics)
-        chunk_data += struct.pack('B', 0) #TODO chiedere che tipo di fisica gestisce ovo? non ce nella doc, idem per hulls
-        
-        # LODs (1 = single LOD)
-        chunk_data += struct.pack('I', 1) #TODO chiedere, come campiono la mesh???
-        
-        # write vertex and face counts
-        chunk_data += struct.pack('2I', len(bm.verts), len(bm.faces))
-        
-        # get UV layer
-        uv_layer = mesh.uv_layers.active.data if mesh.uv_layers.active else None
 
-        print("\nDEBUG UV COORDINATES:")
-        if uv_layer:
-            for i, uv_data in enumerate(uv_layer):
-                print(f"UV[{i}]: ({uv_data.uv.x}, {uv_data.uv.y})")
+        # Write physics flag (0 = no physics)
+        chunk_data += struct.pack('B', 0)
 
+        # Write LODs (1 = single LOD)
+        chunk_data += struct.pack('I', 1)
 
-        # get vertex transform matrix for normal conversion
-        normal_matrix = conversion_matrix.to_3x3().normalized()
-
-        def transform_normal(normal):
-            """Transform normal from Blender to OpenGL coordinates"""
-            # Per le normali ci interessa solo la rotazione, non la traslazione
-            # Blender -> OpenGL:
-            # 1. Ruota 180° attorno a Z per invertire X
-            # 2. Ruota -90° attorno a X per allineare Y verso l'alto e Z lontano da noi
-            rot_z = mathutils.Matrix.Rotation(math.radians(-0), 3, 'Z')
-            rot_x = mathutils.Matrix.Rotation(math.radians(-0), 3, 'X')
-
-
-            # Applica le rotazioni nell'ordine corretto
-            transformed = rot_x @ rot_z @ normal
-
-            # Re-normalizza dopo la trasformazione
-            return transformed.normalized()
+        # Write vertex and face counts
+        chunk_data += struct.pack('I', len(vertices_data))
+        chunk_data += struct.pack('I', len(bm.faces))
 
         # Write vertex data
-        for vertex in bm.verts:
-            # Vertex position
-            chunk_data += self.pack_vector3(vertex.co)
-
-            # Normal
-            transformed_normal = transform_normal(vertex.normal)
-            chunk_data += self.pack_normal(transformed_normal)
-
-            # UV coordinates - accesso diretto attraverso il loop
-            if uv_layer and vertex.link_loops:
-                # Prendi il primo loop associato al vertice
-                uv = uv_layer[vertex.link_loops[0].index].uv
-            else:
-                uv = mathutils.Vector((0, 0))
+        for pos, norm, uv in vertices_data:
+            chunk_data += self.pack_vector3(pos)
+            # Usa direttamente la normale già trasformata
+            chunk_data += self.pack_normal(norm)
             chunk_data += self.pack_uv(uv)
+            chunk_data += struct.pack('I', 0)  # tangent
 
-            # Tangent
-            chunk_data += struct.pack('I', 0)
-
-        # Poi, quando scrivi le facce:
+        # Write face indices
         for face in bm.faces:
-            v0, v1, v2 = face.verts
-            # In OpenGL, le facce front-facing sono specificate in ordine antiorario (CCW)
-            # Poiché abbiamo applicato una trasformazione che include una rotazione di 180° su Z
-            # e -90° su X, dobbiamo mantenere l'ordine originale dei vertici
-            indices = [v0.index, v1.index, v2.index]
-            for idx in indices:
-                chunk_data += struct.pack('I', idx)
-        
-        # cleanup
+            for loop in face.loops:
+                uv = vertex_face_uvs[(loop.vert.index, face.index)]
+                uv_key = (round(uv.x, 5), round(uv.y, 5))
+                new_idx = vertex_map[(loop.vert.index, uv_key)]
+                chunk_data += struct.pack('I', new_idx)
+
+        # Write the complete mesh chunk
+        self.write_chunk_header(file, ChunkType.MESH, len(chunk_data))
+        file.write(chunk_data)
+
+        # Cleanup
         bm.free()
         obj_eval.to_mesh_clear()
-        
-        #manca skinned
-
-        # write the complete mesh chunk
-        self.write_chunk_header(file, ChunkType.MESH, len(chunk_data))
-        file.write(chunk_data)          
      
     
     def write_light_chunk(self, file, obj, num_children):
@@ -707,7 +668,7 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Specifica il percorso del file .blend da caricare
-        blend_path = os.path.join(script_dir, "scenes", "untitled.blend")
+        blend_path = os.path.join(script_dir, "scenes", "scarpa.blend")
 
         # Carica la scena
         bpy.ops.wm.open_mainfile(filepath=blend_path)
