@@ -272,9 +272,9 @@ class OVO_Exporter:
         # conta i figli effettivi (escludi gli oggetti già processati)
         real_children = [child for child in obj.children if child not in self.processed_objects]
         num_children = len(real_children)
-        
+
         print(f"Processing object: {obj.name} (Type: {obj.type}) with {num_children} children") #DEBUG
-        
+
         # scrivo il nodo corrente con il numero corretto di figli
         if obj.type == 'MESH':
             self.write_mesh_chunk(file, obj, num_children)
@@ -283,13 +283,13 @@ class OVO_Exporter:
         elif obj.type == 'EMPTY':
             self.write_node_chunk(file, obj, num_children)
         else:
-            # per altri tipi (sconosciuti etc..) scrivo nodo base 
+            # per altri tipi (sconosciuti etc..) scrivo nodo base
             self.write_node_chunk(file, obj, num_children)
         
         # processa ricorsivamente i figli
         for child in real_children:
             self.write_node_recursive(file, child)
-    
+
         
     def write_node_chunk(self, file, obj, num_children):
         """Write a basic node chunk for objects that aren't mesh or light"""
@@ -301,24 +301,18 @@ class OVO_Exporter:
         #!!!!!!!!!!!!!! CONVERSIONE MATRICE NODO!!!!!!!!!!!!!!!!!!!
 
         #copia world matrix
-        matrix_world = obj.matrix_world.copy()
-        
-        # estrai traslazione: 
-        # (LA SCALA E LA ROTAZIOEN NON HANNO SENSO, non è una mesh, le trasformazioni 
-        # sono applicate correttamente ai figli in caso e a tutte le mesh)
-        # le coordinate invece possono essere traslate e di conseguenza traslano i figli male se non gestite correttamente
+        if obj.parent:
 
-        #prendi matrice transform
-        translation = matrix_world.to_translation()
-        #coordinate blender: X pos verso sinistra, X pos verso alto, Y negativo verso di noi
-        new_translation = mathutils.Vector((-translation.x, -translation.z, translation.y)) # converto in opengl (non sicura di Z, X OK TESTATO)
-        
-        # crea una nuova matrice mantenendo rotazione e scala ma con traslazione convertita
-        new_matrix = matrix_world.copy()
-        new_matrix.translation = new_translation
+            matrix_world = obj.parent.matrix_world.inverted() @ obj.matrix_world
+        else:
+            print("___________________________________________PARENT ROOT")
+            matrix = obj.matrix_world.copy()
+            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
+            matrix_world = conversion @ matrix
+
         
         # Pack della matrice
-        chunk_data += self.pack_matrix(new_matrix)
+        chunk_data += self.pack_matrix(matrix_world)
         
         # Number of children
         chunk_data += struct.pack('I', num_children)
@@ -336,11 +330,18 @@ class OVO_Exporter:
         # Mesh name
         chunk_data += self.pack_string(obj.name)
 
-        # Matrix handling
-        matrix_world = obj.matrix_world.copy()
-        conversion_matrix = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-        conversion_matrix2 = mathutils.Matrix.Rotation(math.radians(180), 4, 'Z')
-        final_matrix = conversion_matrix @ conversion_matrix2 @ matrix_world
+        # ...
+        if obj.parent:
+
+            local_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
+        else:
+            print("___________________________________________PARENT ROOT")
+            matrix = obj.matrix_world.copy()
+            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
+            local_matrix = conversion @ matrix
+
+        # Salva la matrice senza conversioni
+        final_matrix = local_matrix
         chunk_data += self.pack_matrix(final_matrix)
 
         # Children and material data
@@ -461,13 +462,14 @@ class OVO_Exporter:
         
         # CONVERSIONE COORDINATE LOCALI -> COME MESH GUARDA LI PER COMMENTO
 
-        matrix_world = obj.matrix_world.copy()
-        # Applica prima la rotazione di -90° su X per allineare Y verso l'alto 
-        conversion_matrix = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-        # Poi rotazione di 180° su Z per invertire X
-        conversion_matrix2 = mathutils.Matrix.Rotation(math.radians(180), 4, 'Z')
-        # Applica le conversioni DOPO la matrice world
-        final_matrix = conversion_matrix @ conversion_matrix2 @ matrix_world
+        if obj.parent:
+
+            final_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
+        else:
+            print("___________________________________________PARENT ROOT")
+            matrix = obj.matrix_world.copy()
+            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
+            final_matrix = conversion @ matrix
 
         chunk_data += self.pack_matrix(final_matrix)
         # num of children
