@@ -1,3 +1,4 @@
+import math
 import bpy
 import struct
 import os
@@ -11,7 +12,7 @@ bl_info = {
     "name": "OVO Format Importer",
     "author": "Martina Galasso & Kevin Quarenghi",
     "version": (0, 1),
-    "blender": (4, 2, 1),
+    "blender": (4, 0, 0),
     "location": "File > Import > OverView Object (.ovo)",
     "description": "Import an OVO scene file into Blender",
     "category": "Import-Export",
@@ -77,7 +78,10 @@ class OVO_Importer:
         self.materials = {}  # Dictionary to store materials
         self.nodes = []  # Stores parsed nodes
         self.lights = []  # Stores parsed lights
-        self.object_data = {}  # Stores scene-level metadata
+        self.object_data = {}  # Stores scene-level metadata$
+        self.blender_meshes = []
+
+    ############################# PARSING FROM OVO #############################
 
     def read_string(self, file):
         """
@@ -312,54 +316,100 @@ class OVO_Importer:
 
         # Read light name
         light_name = self.read_string(file)
+        if not light_name.strip():
+            light_name = f"Unnamed_Light_{len(self.lights)}"  # Assign default name
+            print(f"Warning: Missing light name in OVO file. Assigning: {light_name}")
+
         print(f"\nProcessing LIGHT: {light_name}")
 
         # Read transformation matrix (16 floats)
-        matrix_values = struct.unpack('16f', file.read(64))
-        transformation_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
+        try:
+            matrix_values = struct.unpack('16f', file.read(64))
+            transformation_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
+
+            # Validate transformation matrix
+            if not all(-1e6 < v < 1e6 for v in matrix_values):  # Limit matrix values
+                print("Warning: Unusual transformation matrix detected. Resetting to identity.")
+                transformation_matrix = mathutils.Matrix.Identity(4)
+
+        except struct.error:
+            print("Error reading transformation matrix. Using identity matrix.")
+            transformation_matrix = mathutils.Matrix.Identity(4)
+
         print(f"Transformation Matrix:\n{transformation_matrix}")
 
         # Read number of children
-        num_children = struct.unpack('I', file.read(4))[0]
+        try:
+            num_children = struct.unpack('I', file.read(4))[0]
+        except struct.error:
+            num_children = 0  # Default to 0 if reading fails
         print(f"Number of Children: {num_children}")
 
         # Read target node
         target_node = self.read_string(file)
+        print(f"Target Node: {target_node if target_node else '[none]'}")
 
         # Read light subtype (0 = Omni, 1 = Directional, 2 = Spot)
-        light_type = struct.unpack('B', file.read(1))[0]
-        print(f"Light Type: {light_type}")
+        try:
+            light_type = struct.unpack('B', file.read(1))[0]
+            if light_type not in [0, 1, 2]:
+                print(f"⚠️ Warning: Unknown light type ({light_type}), defaulting to Omni (0).")
+                light_type = 0
+        except struct.error:
+            light_type = 0  # Default to Omni if error
+        print(f"Light Type: {['Omni', 'Directional', 'Spot'][light_type]}")
 
         # Read light color (3 floats)
-        color = struct.unpack('3f', file.read(12))
+        try:
+            color = struct.unpack('3f', file.read(12))
+        except struct.error:
+            color = (1.0, 1.0, 1.0)  # Default to white
         print(f"Light Color: {color}")
 
         # Read radius
-        radius = struct.unpack('f', file.read(4))[0]
+        try:
+            radius = struct.unpack('f', file.read(4))[0]
+        except struct.error:
+            radius = 10.0  # Default radius
         print(f"Light Radius: {radius}")
 
-        # Read direction (only for directional or spot lights)
-        direction = struct.unpack('3f', file.read(12))
+        # Read direction (only relevant for directional and spot lights)
+        try:
+            direction = struct.unpack('3f', file.read(12))
+        except struct.error:
+            direction = (0.0, 0.0, -1.0)  # Default downward
         print(f"Light Direction: {direction}")
 
         # Read cutoff angle (for spot lights)
-        cutoff_angle = struct.unpack('f', file.read(4))[0]
-        print(f"Cutoff Angle: {cutoff_angle}")
+        try:
+            cutoff_angle = struct.unpack('f', file.read(4))[0]
+        except struct.error:
+            cutoff_angle = 45.0  # Default spot cutoff
+        print(f"Cutoff Angle: {cutoff_angle}°")
 
         # Read spot exponent
-        spot_exponent = struct.unpack('f', file.read(4))[0]
+        try:
+            spot_exponent = struct.unpack('f', file.read(4))[0]
+        except struct.error:
+            spot_exponent = 1.0  # Default spot exponent
         print(f"Spot Exponent: {spot_exponent}")
 
         # Read shadow flag (0 = No Shadows, 1 = Shadows)
-        cast_shadows = struct.unpack('B', file.read(1))[0]
-        print(f"Casts Shadows: {cast_shadows}")
+        try:
+            cast_shadows = struct.unpack('B', file.read(1))[0]
+        except struct.error:
+            cast_shadows = 0  # Default: No Shadows
+        print(f"Casts Shadows: {'Yes' if cast_shadows else 'No'}")
 
         # Read volumetric flag (0 = No Volumetric Light, 1 = Yes)
-        volumetric = struct.unpack('B', file.read(1))[0]
-        print(f"Volumetric: {volumetric}")
+        try:
+            volumetric = struct.unpack('B', file.read(1))[0]
+        except struct.error:
+            volumetric = 0  # Default: No volumetric
+        print(f"Volumetric: {'Yes' if volumetric else 'No'}")
 
         # Store parsed light
-        self.lights.append({
+        light_data = {
             "name": light_name,
             "matrix": transformation_matrix,
             "type": light_type,
@@ -370,21 +420,21 @@ class OVO_Importer:
             "spot_exponent": spot_exponent,
             "shadows": cast_shadows,
             "volumetric": volumetric
-        })
+        }
+
+        print(f"Storing Light Data: {light_data}")  # Debugging statement
+        self.lights.append(light_data)
 
         # Ensure we fully read the chunk
         end_position = file.tell()
         remaining_bytes = chunk_size - (end_position - start_position)
         if remaining_bytes > 0:
+            print(f"Skipping {remaining_bytes} bytes of padding.")
             file.read(remaining_bytes)  # Skip padding if needed
 
     def parse_object_chunk(self, file, chunk_size):
         """
         Reads and processes an OBJECT chunk from the OVO file.
-
-        Args:
-            file (file object): The opened binary file.
-            chunk_size (int): The size of the chunk to read.
         """
         start_position = file.tell()
 
@@ -392,8 +442,29 @@ class OVO_Importer:
         ovo_version = struct.unpack('I', file.read(4))[0]
         print(f"\nProcessing OBJECT chunk... OVO Version: {ovo_version}")
 
+        # Read object name
+        object_name = self.read_string(file)
+        print(f"Object Name: {object_name}")
+
         # Store parsed object metadata
-        self.object_data = {"version": ovo_version}
+        self.object_data = {
+            "version": ovo_version,
+            "name": object_name if object_name else "OVO_Scene_Root"
+        }
+
+        # Check if it has a transformation matrix, if it is unusual is being resetted to Identity
+        try:
+            matrix_values = struct.unpack('16f', file.read(64))
+            transformation_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
+            if not all(-1e6 < v < 1e6 for v in matrix_values):  # Limit matrix values
+                print("Warning: Unusual transformation matrix detected. Resetting to identity.")
+                transformation_matrix = mathutils.Matrix.Identity(4)
+        except struct.error:
+            print("Error reading transformation matrix. Using identity matrix.")
+            transformation_matrix = mathutils.Matrix.Identity(4)
+
+        self.object_data["matrix"] = transformation_matrix
+        print(f"Object Transformation Matrix:\n{transformation_matrix}")
 
         # Ensure we fully read the chunk
         end_position = file.tell()
@@ -454,9 +525,199 @@ class OVO_Importer:
         except Exception as e:
             print(f"Error while parsing file: {e}")
 
+############################# CONVERTING IN BLENDER #############################
 
-# Example usage
+    def create_blender_materials(self):
+        """
+        Creates Blender materials from parsed OVO material data.
+        """
+        for mat_name, mat_data in self.materials.items():
+            print(f"Creating Material: {mat_name}")
+
+            # Create a new Blender material
+            material = bpy.data.materials.new(name=mat_name)
+            material.use_nodes = True
+            nodes = material.node_tree.nodes
+            bsdf = nodes.get("Principled BSDF")
+
+            if bsdf:
+                # Set base color
+                base_color = mat_data["base_color"]
+                bsdf.inputs["Base Color"].default_value = (base_color[0], base_color[1], base_color[2], 1.0)
+
+                # Check if "Emission" exists in the node before setting it
+                if "Emission" in bsdf.inputs:
+                    emission = mat_data["emission"]
+                    bsdf.inputs["Emission"].default_value = (emission[0], emission[1], emission[2], 1.0)
+                else:
+                    print(f"Warning: 'Emission' not found in {mat_name}")
+
+                # Set roughness & metallic
+                bsdf.inputs["Roughness"].default_value = mat_data["roughness"]
+                bsdf.inputs["Metallic"].default_value = mat_data["metallic"]
+
+            # Store the created material
+            self.materials[mat_name]["blender_material"] = material
+
+    def create_blender_meshes(self):
+        """
+        Creates Blender mesh objects from parsed OVO mesh data.
+        """
+        for mesh_data in self.meshes:
+            print(f"Creating Mesh: {mesh_data['name']}")
+
+            # Create a new mesh and object
+            mesh = bpy.data.meshes.new(mesh_data["name"])
+            obj = bpy.data.objects.new(mesh_data["name"], mesh)
+
+            # Add to the scene
+            bpy.context.collection.objects.link(obj)
+
+            # Apply transformation matrix
+            obj.matrix_world = mesh_data["matrix"]
+
+            # Create mesh geometry
+            mesh.from_pydata(mesh_data["vertices"], [], mesh_data["faces"])
+            mesh.update()
+
+            # Assign material
+            material_name = mesh_data["material"]
+            if material_name in self.materials:
+                material = self.materials[material_name]["blender_material"]
+                obj.data.materials.append(material)
+
+            # Store created object
+            self.blender_meshes.append(obj)
+
+    def create_blender_lights(self):
+        """
+        Creates Blender light objects from parsed OVO light data.
+        """
+        for light_data in self.lights:
+            if "name" not in light_data:
+                print(f"Warning: Light data missing 'name' key. Skipping: {light_data}")
+                continue  # Skip this light if the name is missing
+
+            print(f"Creating Light: {light_data['name']}")
+
+            # Determine light type
+            light_type = ["POINT", "SUN", "SPOT"][light_data["type"]]
+
+            # Create a new light
+            light = bpy.data.lights.new(name=light_data["name"], type=light_type)
+            obj = bpy.data.objects.new(light_data["name"], light)
+
+            # Add to the scene
+            bpy.context.collection.objects.link(obj)
+
+            # Apply transformation
+            obj.matrix_world = light_data["matrix"]
+
+            # Set light properties
+            light.color = light_data["color"]
+            light.energy = light_data["radius"] * 10  # Scale brightness based on radius
+
+            if light_type == "SPOT":
+                light.spot_size = math.radians(light_data["cutoff"])
+                light.spot_blend = light_data["spot_exponent"]
+
+            # Store created light
+            self.lights.append(obj)
+
+    def create_blender_objects(self):
+        """
+        Creates Blender objects for the main OVO scene.
+        """
+        if "name" not in self.object_data:
+            print("No root OBJECT found, skipping object creation.")
+            return
+
+        object_name = self.object_data["name"]
+        print(f"Creating OBJECT: {object_name}")
+
+        # Create an empty object to represent the scene
+        obj = bpy.data.objects.new(object_name, None)
+        obj.matrix_world = self.object_data["matrix"]
+
+        # Add to the scene
+        bpy.context.collection.objects.link(obj)
+
+        # Store the object
+        self.object_data["blender_object"] = obj
+
+    def apply_parenting(self):
+        """
+        Applies the correct parent-child hierarchy based on OVO node data.
+        """
+        for node in self.nodes:
+            parent_name = node["target"]
+            child_name = node["name"]
+
+            # Get Blender objects by name
+            parent_obj = bpy.data.objects.get(parent_name)
+            child_obj = bpy.data.objects.get(child_name)
+
+            if parent_obj and child_obj:
+                print(f"Parenting {child_name} → {parent_name}")
+                child_obj.parent = parent_obj
+
+    def import_scene(self):
+        """
+        Parses the OVO file and generates the scene in Blender.
+        """
+        print("\n=== Importing OVO Scene ===")
+        self.parse_file()  # Parse the file first
+
+        # Create objects in Blender
+        self.create_blender_materials()
+        self.create_blender_meshes()
+        self.create_blender_lights()
+        self.apply_parenting()
+        self.create_blender_objects()
+
+        print("\n=== Import Complete! ===")
+
+
+############################# REGISTER FOR BLENDER #############################
+
+class OT_ImportOVO(Operator, ImportHelper):
+    """Import an OVO scene file"""
+    bl_idname = "import_scene.ovo"
+    bl_label = "Import OVO"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filename_ext = ".ovo"
+    filter_glob: StringProperty(default="*.ovo", options={'HIDDEN'})
+
+    def execute(self, context):
+        """Execute the import process"""
+        importer = OVO_Importer(self.filepath)
+        importer.import_scene()
+        return {'FINISHED'}
+
+# Function to add import option in the File > Import menu
+def menu_func(self, context):
+    self.layout.operator(OT_ImportOVO.bl_idname, text="OverView Object (.ovo)")
+
+def register():
+    """Registers the addon and its components"""
+    bpy.utils.register_class(OT_ImportOVO)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func)
+
+def unregister():
+    """Unregisters the addon and its components"""
+    bpy.utils.unregister_class(OT_ImportOVO)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func)
+
+if __name__ == "__main__":
+    register()
+
+############################# TESTING MAIN #############################
+"""
 if __name__ == "__main__":
     filepath = "C:\\Users\\kevin\\Desktop\\SemesterProject\\addons\\bin\\output.ovo"
     importer = OVO_Importer(filepath)
-    importer.parse_file()
+    importer.import_scene()
+    bpy.context.view_layer.update()
+    print("Scene update complete.")
+"""
