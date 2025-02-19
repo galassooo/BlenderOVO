@@ -353,7 +353,7 @@ class OVO_Importer:
         try:
             light_type = struct.unpack('B', file.read(1))[0]
             if light_type not in [0, 1, 2]:
-                print(f"⚠️ Warning: Unknown light type ({light_type}), defaulting to Omni (0).")
+                print(f"Warning: Unknown light type ({light_type}), defaulting to Omni (0).")
                 light_type = 0
         except struct.error:
             light_type = 0  # Default to Omni if error
@@ -562,6 +562,7 @@ class OVO_Importer:
     def create_blender_meshes(self):
         """
         Creates Blender mesh objects from parsed OVO mesh data.
+        Ensures correct application of transformation matrices.
         """
         for mesh_data in self.meshes:
             print(f"Creating Mesh: {mesh_data['name']}")
@@ -570,11 +571,19 @@ class OVO_Importer:
             mesh = bpy.data.meshes.new(mesh_data["name"])
             obj = bpy.data.objects.new(mesh_data["name"], mesh)
 
+            # Convert OpenGL (Y-up) to Blender (Z-up) by swapping Y and Z axes
+            opengl_to_blender = mathutils.Matrix((
+                (1, 0, 0, 0),
+                (0, 0, -1, 0),  # Swap Y → -Z
+                (0, 1, 0, 0),  # Swap Z → Y
+                (0, 0, 0, 1)
+            ))
+
+            # Apply transformation matrix with conversion
+            obj.matrix_world = opengl_to_blender @ mesh_data["matrix"].transposed()
+
             # Add to the scene
             bpy.context.collection.objects.link(obj)
-
-            # Apply transformation matrix
-            obj.matrix_world = mesh_data["matrix"]
 
             # Create mesh geometry
             mesh.from_pydata(mesh_data["vertices"], [], mesh_data["faces"])
@@ -586,17 +595,17 @@ class OVO_Importer:
                 material = self.materials[material_name]["blender_material"]
                 obj.data.materials.append(material)
 
-            # Store created object
             self.blender_meshes.append(obj)
 
     def create_blender_lights(self):
         """
         Creates Blender light objects from parsed OVO light data.
+        Applies the correct transformation matrix.
         """
         for light_data in self.lights:
             if "name" not in light_data:
                 print(f"Warning: Light data missing 'name' key. Skipping: {light_data}")
-                continue  # Skip this light if the name is missing
+                continue
 
             print(f"Creating Light: {light_data['name']}")
 
@@ -607,11 +616,19 @@ class OVO_Importer:
             light = bpy.data.lights.new(name=light_data["name"], type=light_type)
             obj = bpy.data.objects.new(light_data["name"], light)
 
+            # Convert OpenGL (Y-up) to Blender (Z-up)
+            opengl_to_blender = mathutils.Matrix((
+                (1, 0, 0, 0),
+                (0, 0, -1, 0),  # Swap Y → -Z
+                (0, 1, 0, 0),  # Swap Z → Y
+                (0, 0, 0, 1)
+            ))
+
+            # Apply transformation matrix with conversion
+            obj.matrix_world = opengl_to_blender @ light_data["matrix"].transposed()
+
             # Add to the scene
             bpy.context.collection.objects.link(obj)
-
-            # Apply transformation
-            obj.matrix_world = light_data["matrix"]
 
             # Set light properties
             light.color = light_data["color"]
@@ -621,7 +638,6 @@ class OVO_Importer:
                 light.spot_size = math.radians(light_data["cutoff"])
                 light.spot_blend = light_data["spot_exponent"]
 
-            # Store created light
             self.lights.append(obj)
 
     def create_blender_objects(self):
@@ -637,12 +653,21 @@ class OVO_Importer:
 
         # Create an empty object to represent the scene
         obj = bpy.data.objects.new(object_name, None)
-        obj.matrix_world = self.object_data["matrix"]
+
+        # Convert OpenGL (Y-up) to Blender (Z-up)
+        opengl_to_blender = mathutils.Matrix((
+            (1, 0, 0, 0),
+            (0, 0, -1, 0),  # Swap Y → -Z
+            (0, 1, 0, 0),  # Swap Z → Y
+            (0, 0, 0, 1)
+        ))
+
+        # Apply transformation matrix with conversion
+        obj.matrix_world = opengl_to_blender @ self.object_data["matrix"].transposed()
 
         # Add to the scene
         bpy.context.collection.objects.link(obj)
 
-        # Store the object
         self.object_data["blender_object"] = obj
 
     def apply_parenting(self):
@@ -713,11 +738,11 @@ if __name__ == "__main__":
     register()
 
 ############################# TESTING MAIN #############################
-"""
+"""""
 if __name__ == "__main__":
     filepath = "C:\\Users\\kevin\\Desktop\\SemesterProject\\addons\\bin\\output.ovo"
     importer = OVO_Importer(filepath)
     importer.import_scene()
     bpy.context.view_layer.update()
     print("Scene update complete.")
-"""
+"""""
