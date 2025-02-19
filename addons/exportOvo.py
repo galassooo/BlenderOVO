@@ -465,11 +465,14 @@ class OVO_Exporter:
 
             # Tangent
             chunk_data += struct.pack('I', 0)
-        
+
+        # Poi, quando scrivi le facce:
         for face in bm.faces:
             v0, v1, v2 = face.verts
-            # Gli indici dei vertici devono mantenere l'ordine orario in OpenGL
-            indices = [v0.index, v2.index, v1.index]  # Cambia l'ordine ma non inverte
+            # In OpenGL, le facce front-facing sono specificate in ordine antiorario (CCW)
+            # Poiché abbiamo applicato una trasformazione che include una rotazione di 180° su Z
+            # e -90° su X, dobbiamo mantenere l'ordine originale dei vertici
+            indices = [v0.index, v1.index, v2.index]
             for idx in indices:
                 chunk_data += struct.pack('I', idx)
         
