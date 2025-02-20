@@ -188,59 +188,62 @@ class OVO_Exporter:
         self.write_chunk_header(file, ChunkType.OBJECT, len(chunk_data))
         file.write(chunk_data)
 
-
     def write_material_chunk(self, file, material):
-        chunk_data = b''
-
-        # Material name
+        chunk_data = b''  # byte chunk, non stringa
+        # Nome del materiale
         chunk_data += self.pack_string(material.name)
-        print(f"\nProcessing material: {material.name}")  # Debug
 
-        # Default values
+        # Valori di default
         emission_color = (0, 0, 0)
         base_color_rgb = (0.8, 0.8, 0.8)
         alpha = 1.0
         roughness = 0.5
         metallic = 0.0
 
-        # Default files values
+        # Valori di default per i file texture
         albedo_texture = "[none]"
         normal_texture = "[none]"
         roughness_texture = "[none]"
         metallic_texture = "[none]"
         height_texture = "[none]"
 
-        # Traccia da un nodo dello shader (input) al nodo image texture (ShaderNodeTexImage)
-        def trace_to_image_node(input_socket):
-            """Trace back through node connections to find an image node"""
-            if not input_socket or not input_socket.is_linked:
+        # Funzione ricorsiva per risalire la catena dei nodi fino al nodo image texture,
+        # gestendo anche eventuali nodi intermedi (es. Bright/Contrast)
+        def trace_to_image_node(input_item):
+            # Se l'elemento non possiede l'attributo is_linked, potrebbe essere un nodo;
+            # in questo caso, prendi il socket "Color" se presente.
+            if not hasattr(input_item, "is_linked"):
+                input_item = input_item.inputs.get("Color")
+                if not input_item:
+                    return "[none]"
+
+            # Se il socket non è collegato, esci
+            if not input_item or not input_item.is_linked:
                 return "[none]"
 
-            from_node = input_socket.links[0].from_node
-            print(f"Tracing from input: {input_socket.name}")
+            # Ottieni il socket di origine e il relativo nodo
+            from_socket = input_item.links[0].from_socket
+            from_node = from_socket.node
+            print(f"Tracing from input: {input_item.name}")
             print(f"Connected node type: {type(from_node).__name__}")
 
-            # Check per ShaderNodeTexImage
+            # Caso base: se il nodo è un Image Texture, salviamo la texture
             if isinstance(from_node, bpy.types.ShaderNodeTexImage):
                 print("Found Image Texture node directly")
                 if from_node.image:
                     image = from_node.image
                     print(f"Image name: {image.name}")
-
-                    # Se l'immagine è impacchettata
+                    # Se l'immagine è impacchettata, salvala nella cartella di output
                     if image.packed_file:
-                        # Usa il nome originale dell'immagine senza aggiungere estensioni
                         texture_filename = image.name
                         output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
-
                         try:
-                            # Salva una copia dell'immagine
-                            temp_path = output_path
-                            image.save_render(temp_path)
+                            image.save_render(output_path)
                             return texture_filename
                         except Exception as e:
                             print(f"Failed to export texture {texture_filename}: {e}")
-                    # Se l'immagine non è impacchettata ma ha un percorso valido
+                            return "[none]"
+                    # Se l'immagine ha un filepath valido, copia il file
                     elif image.filepath:
                         source_path = bpy.path.abspath(image.filepath)
                         if os.path.exists(source_path):
@@ -251,81 +254,84 @@ class OVO_Exporter:
                                 return texture_filename
                             except Exception as e:
                                 print(f"Failed to copy texture: {e}")
-
+                                return "[none]"
                     return image.name
                 return "[none]"
 
-            # Resto del codice per la ricerca ricorsiva nei nodi...
+            # Se il nodo non è un Image Texture, prova a risalire tramite il socket "Color"
             if hasattr(from_node, 'inputs'):
                 color_input = from_node.inputs.get('Color')
                 if color_input and color_input.is_linked:
-                    next_node = color_input.links[0].from_node
-                    if isinstance(next_node, bpy.types.ShaderNodeTexImage):
-                        if next_node.image:
-                            return trace_to_image_node(next_node)
+                    return trace_to_image_node(color_input)
+                # Se non c'è "Color", prova tutti gli input collegati
+                for inp in from_node.inputs:
+                    if inp.is_linked:
+                        result = trace_to_image_node(inp)
+                        if result != "[none]":
+                            return result
 
-                for input in from_node.inputs:
-                    if input.is_linked:
-                        next_node = input.links[0].from_node
-                        if isinstance(next_node, bpy.types.ShaderNodeTexImage):
-                            if next_node.image:
-                                return trace_to_image_node(next_node)
-
+            print("No image found in node chain")
             return "[none]"
 
-        # Extract material properties
+        # Estrai le proprietà del materiale
         if material.use_nodes and material.node_tree:
             principled = material.node_tree.nodes.get('Principled BSDF')
             emission_node = material.node_tree.nodes.get('Emission')
 
+            # Conversione dell'emission (da RGBA Blender a RGB per OVO)
             if emission_node:
                 emission = emission_node.inputs[0].default_value
                 emission_color = emission[:3] if len(emission) > 2 else (0, 0, 0)
 
             if principled:
-                # Base color and texture
+                # Base Color e relativa texture
                 base_color_input = principled.inputs.get('Base Color')
                 if base_color_input:
                     if base_color_input.is_linked:
                         albedo_texture = trace_to_image_node(base_color_input)
-                        print(f"Albedo texture: {albedo_texture}")  # Debug
                     else:
                         base_color = base_color_input.default_value
                         base_color_rgb = base_color[:3] if len(base_color) > 2 else (0.8, 0.8, 0.8)
                         alpha = base_color[3] if len(base_color) > 3 else 1.0
 
-                # Material properties
+                # Proprietà del materiale
                 roughness = principled.inputs['Roughness'].default_value
                 metallic = principled.inputs['Metallic'].default_value
 
-                # Other textures
-                for input_name, texture_var in [
-                    ('Normal', 'normal_texture'),
-                    ('Roughness', 'roughness_texture'),
-                    ('Metallic', 'metallic_texture'),
-                    ('Height', 'height_texture')
-                ]:
-                    input_socket = principled.inputs.get(input_name)
-                    if input_socket:
-                        locals()[texture_var] = trace_to_image_node(input_socket)
-                        print(f"{input_name} texture: {locals()[texture_var]}")  # Debug
+                # Altre texture (tramite tracciamento dei nodi)
+                normal_input = principled.inputs.get('Normal')
+                if normal_input:
+                    normal_texture = trace_to_image_node(normal_input)
 
-        # Write data
+                roughness_input = principled.inputs.get('Roughness')
+                if roughness_input:
+                    roughness_texture = trace_to_image_node(roughness_input)
+
+                metallic_input = principled.inputs.get('Metallic')
+                if metallic_input:
+                    metallic_texture = trace_to_image_node(metallic_input)
+
+                height_input = principled.inputs.get('Height')
+                if height_input:
+                    height_texture = trace_to_image_node(height_input)
+
+        # Scrittura dei dati binari nel chunk
         chunk_data += struct.pack('3f', *emission_color)
         chunk_data += struct.pack('3f', *base_color_rgb)
         chunk_data += struct.pack('f', roughness)
         chunk_data += struct.pack('f', metallic)
         chunk_data += struct.pack('f', alpha)
 
-        # Write texture paths
-        for texture in [albedo_texture, normal_texture, height_texture,
-                        roughness_texture, metallic_texture]:
-            chunk_data += self.pack_string(texture)
+        # Scrittura dei percorsi delle texture
+        chunk_data += self.pack_string(albedo_texture)
+        chunk_data += self.pack_string(normal_texture)
+        chunk_data += self.pack_string(height_texture)
+        chunk_data += self.pack_string(roughness_texture)
+        chunk_data += self.pack_string(metallic_texture)
 
-        # Write chunk
+        # Scrive l'header del chunk e il chunk stesso nel file
         self.write_chunk_header(file, ChunkType.MATERIAL, len(chunk_data))
         file.write(chunk_data)
-
 
     def write_node_chunk(self, file, obj, num_children):
         """Write a basic node chunk for objects that aren't mesh or light"""
