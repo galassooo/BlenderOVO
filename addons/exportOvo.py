@@ -19,7 +19,9 @@ import math
 import numpy
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty
-from bpy.types import Operator
+from bpy.props import StringProperty, BoolProperty, EnumProperty
+from bpy.types import Operator, Panel
+
 
 #enum per i tipi TODO da cambiare con solo quelli usati dal reader
 class ChunkType:
@@ -51,11 +53,78 @@ class ChunkType:
     LAST = 25
 
 class OVO_Exporter:
-    def __init__(self, context, filepath):
+    def __init__(self, context, filepath, use_mesh=True, use_light=True):
         self.context = context
         self.filepath = filepath
         self.processed_objects = set()
-        
+        self.use_mesh = use_mesh
+        self.use_light = use_light
+        self.basePath = ""
+
+    def should_export_object(self, obj):
+        """
+        Determina se un oggetto dovrebbe essere esportato in base alle opzioni.
+        """
+        if not obj:
+            return False
+
+        # Controlla il tipo di oggetto
+        if obj.type == 'MESH' and not self.use_mesh:
+            return False
+        if obj.type == 'LIGHT' and not self.use_light:
+            return False
+
+        return True
+
+    def write_node_recursive(self, file, obj):
+        """
+        Scrive ricorsivamente un nodo e tutti i suoi figli nel file OVO.
+        """
+        if obj in self.processed_objects:
+            return
+
+        self.processed_objects.add(obj)
+
+        # Conta solo i figli che verranno effettivamente esportati
+        valid_children = []
+        for child in obj.children:
+            if child not in self.processed_objects:
+                # Aggiungi il figlio solo se dovrebbe essere esportato
+                if ((child.type == 'MESH' and self.use_mesh) or
+                        (child.type == 'LIGHT' and self.use_light) or
+                        (child.type not in {'MESH', 'LIGHT'})):
+                    valid_children.append(child)
+
+        num_children = len(valid_children)
+
+        print(f"\nProcessing: {obj.name}")
+        print(f"Type: {obj.type}")
+        print(f"Number of children: {num_children}")
+        print(f"Should export: {self.should_export_object(obj)}")
+
+        # Processa i materiali per le mesh
+        if obj.type == 'MESH' and self.should_export_object(obj):
+            for material_slot in obj.material_slots:
+                material = material_slot.material
+                if material and material not in self.processed_objects:
+                    self.write_material_chunk(file, material)
+                    self.processed_objects.add(material)
+
+        # Scrivi il nodo solo se dovrebbe essere esportato
+        if ((obj.type == 'MESH' and self.use_mesh) or
+                (obj.type == 'LIGHT' and self.use_light) or
+                (obj.type not in {'MESH', 'LIGHT'})):
+            if obj.type == 'MESH':
+                self.write_mesh_chunk(file, obj, num_children)
+            elif obj.type == 'LIGHT':
+                self.write_light_chunk(file, obj, num_children)
+            else:
+                self.write_node_chunk(file, obj, num_children)
+
+        # Processa ricorsivamente i figli validi
+        for child in valid_children:
+            self.write_node_recursive(file, child)
+
     def pack_string(self, string):
         #encode strings in byte and add end char
         return string.encode('utf-8') + b'\0'
@@ -248,49 +317,7 @@ class OVO_Exporter:
         self.write_chunk_header(file, ChunkType.MATERIAL, len(chunk_data))
         file.write(chunk_data)
 
-    def write_node_recursive(self, file, obj):
-        #scrive nodo e figli ricorsivamente: 
-        # se ho:
-        # node1
-        # |_____node 1a
-        # |     |______ node 1b
-        # |_____node 2
-        #
-        # scriverà 1 -> 1a -> 1b -> 2 e via cosi
 
-        if obj in self.processed_objects: # se gia processato skip
-            return
-        self.processed_objects.add(obj) #altrimenti aggiungo al set
-        
-        # scrivo prima i materiali se non sono stati ancora scritti
-        if obj.type == 'MESH':
-            for material_slot in obj.material_slots:
-                if material_slot.material and material_slot.material not in self.processed_objects:
-                    self.write_material_chunk(file, material_slot.material)
-                    self.processed_objects.add(material_slot.material)
-        
-        # conta i figli effettivi (escludi gli oggetti già processati)
-        real_children = [child for child in obj.children if child not in self.processed_objects]
-        num_children = len(real_children)
-
-        print(f"Processing object: {obj.name} (Type: {obj.type}) with {num_children} children") #DEBUG
-
-        # scrivo il nodo corrente con il numero corretto di figli
-        if obj.type == 'MESH':
-            self.write_mesh_chunk(file, obj, num_children)
-        elif obj.type == 'LIGHT':
-            self.write_light_chunk(file, obj, num_children)
-        elif obj.type == 'EMPTY':
-            self.write_node_chunk(file, obj, num_children)
-        else:
-            # per altri tipi (sconosciuti etc..) scrivo nodo base
-            self.write_node_chunk(file, obj, num_children)
-        
-        # processa ricorsivamente i figli
-        for child in real_children:
-            self.write_node_recursive(file, child)
-
-        
     def write_node_chunk(self, file, obj, num_children):
         """Write a basic node chunk for objects that aren't mesh or light"""
         chunk_data = b'' #binario
@@ -462,14 +489,25 @@ class OVO_Exporter:
         
         # CONVERSIONE COORDINATE LOCALI -> COME MESH GUARDA LI PER COMMENTO
 
-        if obj.parent:
+        # Matrice con solo traslazione, senza rotazione
+        # Crea una matrice identità
+        final_matrix = mathutils.Matrix.Identity(4)
 
-            final_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
+        # Ottieni la posizione e applicala alla matrice
+        if obj.parent:
+            parent_pos = obj.parent.matrix_world.translation
+            obj_pos = obj.matrix_world.translation
+            final_pos = obj_pos - parent_pos
         else:
-            print("___________________________________________PARENT ROOT")
-            matrix = obj.matrix_world.copy()
+            pos = obj.matrix_world.translation
+            # Converti solo la posizione
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            final_matrix = conversion @ matrix
+            final_pos = (conversion @ mathutils.Vector((pos.x, pos.y, pos.z, 1.0))).xyz
+
+        # Imposta solo la colonna della traslazione
+        final_matrix[0][3] = final_pos.x
+        final_matrix[1][3] = final_pos.y
+        final_matrix[2][3] = final_pos.z
 
         chunk_data += self.pack_matrix(final_matrix)
         # num of children
@@ -497,27 +535,27 @@ class OVO_Exporter:
         if light_data.type == 'POINT' or light_data.type == 'SPOT':
             radius = getattr(light_data, 'cutoff_distance', 100.0)
         elif light_data.type == 'SUN':
-            radius = 10000.0  # Large radius for directional lights TODO modificare ed estrai il campo intensity dalla directional
+            radius = 0 #according to exporter 3ds max con la scena per progetto grafica
         else:
-            radius = 100.0  # Default fallback
+            radius = 90.0  # Default fallback
 
         print(f"Debug - Light: {obj.name}, Type: {light_data.type}, Radius: {radius}")  #DEBUG
         chunk_data += struct.pack('f', radius)
 
         # direction
         if light_data.type in {'SUN', 'SPOT'}:
-            #CODICE SENZA TRASFORMAZIONE
-            #rot_mat = obj.matrix_world.to_3x3() 
-            #direction = (rot_mat @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()
-
-            #direzione in coordinate Blender
             rot_mat = obj.matrix_world.to_3x3()
-            raw_direction = rot_mat @ mathutils.Vector((0.0, 0.0, -1.0))
+            raw_direction = mathutils.Vector((0.0, 0.0, -1.0))
 
-            #direzione OpenGL
-            opengl_direction = mathutils.Vector((-raw_direction.x, raw_direction.z, -raw_direction.y))
-            
-            direction = opengl_direction.normalized()
+            print("Original direction:", raw_direction)
+
+            world_direction = rot_mat @ raw_direction
+            print("After world matrix:", world_direction)
+
+            conversion = mathutils.Matrix.Rotation(math.radians(-90), 3, 'X')
+            converted_direction = conversion @ world_direction
+            print("After conversion matrix:", converted_direction)
+            direction = converted_direction
         else:
             direction = mathutils.Vector((0.0, 0.0, -1.0)) #fallback
         chunk_data += self.pack_vector3(direction)
@@ -556,53 +594,51 @@ class OVO_Exporter:
         
         self.write_chunk_header(file, ChunkType.LIGHT, len(chunk_data))
         file.write(chunk_data)
-    
-
 
     def export(self):
-        #export fun
         try:
-            print("\n=== Starting OVO Export ===") #DEBUG
-            print(f"Export path: {self.filepath}") #DEBUG
-            
+            print("\n=== Starting OVO Export ===")
+            print(f"Export path: {self.filepath}")
+            print(f"Use mesh: {self.use_mesh}")
+            print(f"Use light: {self.use_light}")
+
             with open(self.filepath, 'wb') as file:
                 # Write object chunk (version)
                 self.write_object_chunk(file)
-                
+
                 # Process materials first
-                print("\nProcessing materials...") #DEBUG
+                print("\nProcessing materials...")
                 for material in bpy.data.materials:
                     if material is not None and material not in self.processed_objects:
-                        print(f"Processing material: {material.name}") #DEBUG
+                        print(f"Processing material: {material.name}")
                         self.write_material_chunk(file, material)
                         self.processed_objects.add(material)
-                
-                # get all root level objects (quelli orfani)
+
+                # Get root level objects (orphans)
                 root_objects = [obj for obj in bpy.data.objects if obj.parent is None]
                 num_roots = len(root_objects)
-                
-                # write root node first
+
+                # Write root node
                 chunk_data = b''
-                chunk_data += self.pack_string("[root]") 
-                chunk_data += self.pack_matrix(mathutils.Matrix.Identity(4))  # suppongo sia corretta la matrice identità a record di logica
-                chunk_data += struct.pack('I', num_roots)  # Numero di figli (oggetti root)
-                chunk_data += self.pack_string("[none]")  # Target node
-                
-                # Write root node first
+                chunk_data += self.pack_string("[root]")
+                chunk_data += self.pack_matrix(mathutils.Matrix.Identity(4))
+                chunk_data += struct.pack('I', num_roots)
+                chunk_data += self.pack_string("[none]")
+
                 self.write_chunk_header(file, ChunkType.NODE, len(chunk_data))
                 file.write(chunk_data)
-                
-                #processo tutti i nodi ricorsivamente come figli della root
+
+                # Process all nodes recursively as root children
                 print("\nProcessing objects...")
                 for obj in root_objects:
                     if obj not in self.processed_objects:
-                        print(f"\nProcessing root object: {obj.name} (Type: {obj.type})") #DEBUG
+                        print(f"\nProcessing root object: {obj.name} (Type: {obj.type})")
                         self.write_node_recursive(file, obj)
-                    
-            print("\nExport completed successfully!") #DEBUG
+
+            print("\nExport completed successfully!")
             return True
-                
-        except Exception as e: #stack trace in caso di exc
+
+        except Exception as e:
             import traceback
             print("\n=== Export Error ===")
             print(f"Error type: {type(e).__name__}")
@@ -611,30 +647,85 @@ class OVO_Exporter:
             traceback.print_exc()
             print("===================")
             return False
-        
-            
-class OVO_PT_export_main(Operator, ExportHelper): #proprietà per blender
+
+        except Exception as e:
+            import traceback
+            print("\n=== Export Error ===")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print("\nStack trace:")
+            traceback.print_exc()
+            print("===================")
+            return False
+
+
+class OVO_PT_export_main(Operator, ExportHelper):
     bl_idname = "export_scene.ovo"
     bl_label = "Export OVO"
     filename_ext = ".ovo"
-    
+
     filter_glob: StringProperty(
         default="*.ovo",
         options={'HIDDEN'},
-    ) # type: ignore
-    
-    def execute(self, context): #execute fun
-        exporter = OVO_Exporter(context, self.filepath)
-        if exporter.export():
-            self.report({'INFO'}, "Export completed successfully")
-            return {'FINISHED'}
-        else:
-            # Retrieve error
-            import sys
+    )
+
+    use_mesh: BoolProperty(
+        name="Include Meshes",
+        description="Include mesh objects in the export",
+        default=True,
+    )
+
+    use_light: BoolProperty(
+        name="Include Lights",
+        description="Include light objects in the export",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Include/Exclude Objects
+        box = layout.box()
+        box.label(text="Include:", icon='GHOST_ENABLED')
+        row = box.row()
+        row.prop(self, "use_mesh")
+        row.prop(self, "use_light")
+
+    def execute(self, context):
+        try:
+            print("\n=== Starting OVO Export ===")
+            print(f"Export settings:")
+            print(f"- Use mesh: {self.use_mesh}")
+            print(f"- Use light: {self.use_light}")
+            print(f"- Output path: {self.filepath}")
+
+            # Crea l'esportatore
+            exporter = OVO_Exporter(
+                context,
+                self.filepath,
+                use_mesh=self.use_mesh,
+                use_light=self.use_light
+            )
+
+            # Esegui l'export
+            if exporter.export():
+                self.report({'INFO'}, "Export completed successfully")
+                return {'FINISHED'}
+            else:
+                self.report({'ERROR'}, "Export failed. Check system console for details.")
+                return {'CANCELLED'}
+
+        except Exception as e:
             import traceback
-            error_message = "".join(traceback.format_exception(*sys.exc_info()))
-            self.report({'ERROR'}, f"Export failed. Check system console for details.")
-            print(error_message)  # print error on console
+            error_message = "\n=== Export Error ===\n"
+            error_message += f"Error type: {type(e).__name__}\n"
+            error_message += f"Error message: {str(e)}\n"
+            error_message += "\nFull traceback:\n"
+            error_message += traceback.format_exc()
+            error_message += "\n===================\n"
+
+            print(error_message)
+            self.report({'ERROR'}, f"Export failed: {str(e)}")
             return {'CANCELLED'}
 
 def menu_func_export(self, context):
@@ -670,7 +761,7 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Specifica il percorso del file .blend da caricare
-        blend_path = os.path.join(script_dir, "scenes", "scarpa.blend")
+        blend_path = os.path.join(script_dir, "scenes", "scarpa2.blend")
 
         # Carica la scena
         bpy.ops.wm.open_mainfile(filepath=blend_path)
@@ -679,12 +770,20 @@ if __name__ == "__main__":
         # Crea un percorso relativo alla cartella dello script per l'output
         output_path = os.path.join(script_dir, "bin", "output.ovo")
 
-        # Esegui l'export con il percorso relativo
-        bpy.ops.export_scene.ovo(filepath=output_path)
+        # Esegui l'export con il percorso relativo e i parametri desiderati
+        bpy.ops.export_scene.ovo(
+            filepath=output_path,
+            use_mesh=False,          # Includi le mesh
+            use_light=True          # Includi le luci
+        )
         print(f"Export completato con successo! File salvato in: {output_path}")
 
     except Exception as e:
         print(f"Errore durante l'export: {e}")
+        # Stampa il traceback completo per debug
+        import traceback
+        traceback.print_exc()
 
     unregister()
     print("Addon OVO deregistrato.")
+
