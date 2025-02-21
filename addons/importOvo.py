@@ -337,11 +337,17 @@ class OVOMesh(OVONode):
             uv_layer.data[i].uv = self.uvs[loop.vertex_index]
 
         obj = bpy.data.objects.new(self.name, mesh_data)
-        obj.matrix_world = self.matrix
+
+        # Fix matrix transformation
+        scene_handler = OVOScene()
+        corrected_matrix = scene_handler._convert_matrix(self.matrix)
+
+        obj.matrix_world = corrected_matrix  # Apply fixed matrix
         bpy.context.collection.objects.link(obj)
 
         print(
-            f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}")  # Debugging info
+            f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}"
+        )
 
         self.blender_object = obj
         return obj
@@ -650,20 +656,21 @@ class OVOScene:
     def _convert_matrix(self, matrix):
         """
         @brief Converts an OpenGL matrix (row-major, Y-up) to Blender (column-major, Z-up).
-        @param matrix The original 4x4 matrix.
-        @return The converted Blender-compatible matrix.
         """
-        # OpenGL uses row-major order, Blender uses column-major
-        matrix.transpose()
+        print(f"Original OVO Matrix:\n{matrix}")
 
-        # Convert Y-up (OpenGL) to Z-up (Blender)
+        # Transpose and apply coordinate correction
+        matrix.transpose()
         conversion_matrix = mathutils.Matrix([
-            [1,  0,  0,  0],
-            [0,  0,  1,  0],
-            [0, -1,  0,  0],
-            [0,  0,  0,  1]
+            [1, 0, 0, 0],
+            [0, 0, -1, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1]
         ])
-        return conversion_matrix @ matrix  # Apply the transformation
+        converted_matrix = conversion_matrix @ matrix
+
+        print(f"Converted Blender Matrix:\n{converted_matrix}")
+        return converted_matrix
 
 """""
 if __name__ == "__main__":
