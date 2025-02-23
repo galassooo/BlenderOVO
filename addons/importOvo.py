@@ -311,7 +311,7 @@ class OVOMesh(OVONode):
 
     def create_blender_mesh(self):
         """
-        @brief Creates a Blender mesh object from this OVOMesh.
+        Creates a Blender mesh object from this OVOMesh.
         """
         if len(self.faces) == 0:
             print(f"Warning: Mesh {self.name} has no faces and may not be visible.")
@@ -324,30 +324,40 @@ class OVOMesh(OVONode):
         else:
             print(f"Error: Mesh {self.name} has no valid faces.")
 
+        # Enable auto smooth shading
+        mesh_data.use_auto_smooth = True  # Enables Auto Smooth in Mesh properties
+        mesh_data.auto_smooth_angle = 3.1416  # 180 degrees to avoid smoothing everywhere
+
         # Assign normals
-        mesh_data.create_normals_split()
-        for i, loop in enumerate(mesh_data.loops):
-            loop.normal = self.normals[loop.vertex_index]
-        mesh_data.validate()
-        mesh_data.update()
+        if self.normals:
+            mesh_data.validate()
+            mesh_data.update()
+            mesh_data.normals_split_custom_set_from_vertices(self.normals)
+
+        # Mark sharp edges
+        bpy.ops.object.mode_set(mode='EDIT')  # Switch to Edit Mode
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.mark_sharp()  # Mark selected edges as sharp
+        bpy.ops.object.mode_set(mode='OBJECT')  # Switch back to Object Mode
 
         # Assign UVs
-        uv_layer = mesh_data.uv_layers.new()
-        for i, loop in enumerate(mesh_data.loops):
-            uv_layer.data[i].uv = self.uvs[loop.vertex_index]
+        if self.uvs:
+            uv_layer = mesh_data.uv_layers.new()
+            for i, loop in enumerate(mesh_data.loops):
+                uv_layer.data[i].uv = self.uvs[loop.vertex_index]
 
         obj = bpy.data.objects.new(self.name, mesh_data)
 
         # Fix matrix transformation
         scene_handler = OVOScene()
         corrected_matrix = scene_handler._convert_matrix(self.matrix)
-
         obj.matrix_world = corrected_matrix  # Apply fixed matrix
-        bpy.context.collection.objects.link(obj)
 
-        print(
-            f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}"
-        )
+        # Link object and apply flat shading
+        bpy.context.collection.objects.link(obj)
+        bpy.ops.object.shade_flat()  # Apply flat shading globally
+
+        print(f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}")
 
         self.blender_object = obj
         return obj
