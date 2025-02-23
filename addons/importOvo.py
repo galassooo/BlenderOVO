@@ -16,7 +16,7 @@ bl_info = {
     "version": (1, 0),
     "blender": (4, 0, 0),
     "location": "File > Import > OverView Object (.ovo)",
-    "description": "Import an OVO scene file into Blender with correct hierarchy",
+    "description": "Import an OVO scene file into Blender",
     "category": "Import-Export",
 }
 
@@ -324,21 +324,11 @@ class OVOMesh(OVONode):
         else:
             print(f"Error: Mesh {self.name} has no valid faces.")
 
-        # Enable auto smooth shading
-        mesh_data.use_auto_smooth = True  # Enables Auto Smooth in Mesh properties
-        mesh_data.auto_smooth_angle = 3.1416  # 180 degrees to avoid smoothing everywhere
-
         # Assign normals
         if self.normals:
             mesh_data.validate()
             mesh_data.update()
             mesh_data.normals_split_custom_set_from_vertices(self.normals)
-
-        # Mark sharp edges
-        bpy.ops.object.mode_set(mode='EDIT')  # Switch to Edit Mode
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.mark_sharp()  # Mark selected edges as sharp
-        bpy.ops.object.mode_set(mode='OBJECT')  # Switch back to Object Mode
 
         # Assign UVs
         if self.uvs:
@@ -353,9 +343,7 @@ class OVOMesh(OVONode):
         corrected_matrix = scene_handler._convert_matrix(self.matrix)
         obj.matrix_world = corrected_matrix  # Apply fixed matrix
 
-        # Link object and apply flat shading
         bpy.context.collection.objects.link(obj)
-        bpy.ops.object.shade_flat()  # Apply flat shading globally
 
         print(f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}")
 
@@ -591,10 +579,20 @@ class OVOLight(OVONode):
         # Enable shadows if needed
         light_data.use_shadow = bool(self.shadow)
 
-        # Apply transformation matrix (convert from OpenGL to Blender)
-        light_obj.matrix_world = self.matrix
+        # ✅ Fix Matrix Transformation for Blender
+        scene_handler = OVOScene()
+        corrected_matrix = scene_handler._convert_matrix(self.matrix)
 
+        # ✅ Apply Corrected Transformation
+        light_obj.matrix_world = corrected_matrix
+
+        # ✅ Extract Position from Matrix (final column)
+        light_obj.location = corrected_matrix.translation
+
+        # ✅ Link to Blender Scene
         bpy.context.collection.objects.link(light_obj)
+
+        print(f"✅ Created Light: {self.name} at {light_obj.location}")
 
         self.blender_object = light_obj
         return light_obj
