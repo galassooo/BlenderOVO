@@ -579,17 +579,17 @@ class OVOLight(OVONode):
         # Enable shadows if needed
         light_data.use_shadow = bool(self.shadow)
 
-        # ✅ Fix Matrix Transformation for Blender
+        # Fix Matrix Transformation for Blender
         scene_handler = OVOScene()
         corrected_matrix = scene_handler._convert_matrix(self.matrix)
 
-        # ✅ Apply Corrected Transformation
+        # Apply Corrected Transformation
         light_obj.matrix_world = corrected_matrix
 
-        # ✅ Extract Position from Matrix (final column)
+        # Extract Position from Matrix (final column)
         light_obj.location = corrected_matrix.translation
 
-        # ✅ Link to Blender Scene
+        # Link to Blender Scene
         bpy.context.collection.objects.link(light_obj)
 
         print(f"✅ Created Light: {self.name} at {light_obj.location}")
