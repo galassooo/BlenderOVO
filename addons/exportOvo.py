@@ -1,4 +1,6 @@
 # cose per blender
+from itertools import compress
+
 import numpy as np
 
 bl_info = {
@@ -24,6 +26,7 @@ from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator, Panel
+import subprocess
 
 
 #enum per i tipi TODO da cambiare con solo quelli usati dal reader
@@ -188,6 +191,44 @@ class OVO_Exporter:
         self.write_chunk_header(file, ChunkType.OBJECT, len(chunk_data))
         file.write(chunk_data)
 
+    @staticmethod
+    def compress_texture_to_dds(input_path, output_path=None, format="dxt1"):
+        """Comprime una texture nel formato DDS usando il compressore esterno."""
+        if output_path is None:
+            output_path = os.path.splitext(input_path)[0] + ".dds"
+
+        # Ottieni il percorso dell'eseguibile
+        addon_dir = os.path.dirname(os.path.abspath(__file__))
+        compressor_path = os.path.join(addon_dir, "bin", "dds_compress")
+
+        # Verifica che l'eseguibile esista
+        if not os.path.exists(compressor_path):
+            print(f"Errore: l'eseguibile non esiste in {compressor_path}")
+            return False, None
+
+        # Su macOS, rendi l'eseguibile eseguibile
+        os.chmod(compressor_path, 0o755)
+
+        try:
+            # Esegui il compressore
+            cmd = [compressor_path, input_path, output_path, format.lower()]
+            result = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode == 0:
+                print(f"Compressione riuscita: {output_path}")
+                return True, output_path
+            else:
+                print(f"Errore di compressione: {result.stderr}")
+                return False, None
+        except Exception as e:
+            print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+            return False, None
+
     def write_material_chunk(self, file, material):
         chunk_data = b''  # byte chunk, non stringa
         # Nome del materiale
@@ -239,19 +280,36 @@ class OVO_Exporter:
                         output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
                         try:
                             image.save_render(output_path)
-                            return texture_filename
+                            # Ora comprimi la texture in DDS
+                            dds_output = os.path.splitext(output_path)[0] + ".dds"
+                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output)
+                            if success:
+                                os.remove(output_path)
+                                # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
+                                texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
+                                return texture_name_dds
+                            else:
+                                print("Compressione DDS fallita")
+                                return "[none]"
                         except Exception as e:
                             print(f"Failed to export texture {texture_filename}: {e}")
                             return "[none]"
-                    # Se l'immagine ha un filepath valido, copia il file
+                    # Se l'immagine ha un filepath valido, copia il file e comprimi
                     elif image.filepath:
                         source_path = bpy.path.abspath(image.filepath)
                         if os.path.exists(source_path):
                             texture_filename = os.path.basename(source_path)
                             output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
                             try:
-                                shutil.copy2(source_path, output_path)
-                                return texture_filename
+                                dds_output = os.path.splitext(output_path)[0] + ".dds"
+                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output)
+                                if success:
+                                    # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
+                                    texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
+                                    return texture_name_dds
+                                else:
+                                    print("Compressione DDS fallita")
+                                    return "[none]"
                             except Exception as e:
                                 print(f"Failed to copy texture: {e}")
                                 return "[none]"
@@ -766,14 +824,14 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Specifica il percorso del file .blend da caricare
-        blend_path = os.path.join(script_dir, "scenes", "scarpa2.blend")
+        blend_path = os.path.join(script_dir, "../scenes", "scarpa2.blend")
 
         # Carica la scena
         bpy.ops.wm.open_mainfile(filepath=blend_path)
         print(f"Scena caricata da: {blend_path}")
 
         # Crea un percorso relativo alla cartella dello script per l'output
-        output_path = os.path.join(script_dir, "bin", "output.ovo")
+        output_path = os.path.join(script_dir, "../bin", "output.ovo")
 
         # Esegui l'export con il percorso relativo e i parametri desiderati
         bpy.ops.export_scene.ovo(
