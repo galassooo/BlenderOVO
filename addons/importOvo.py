@@ -170,15 +170,26 @@ class OVOImporter:
         # --- Find or create root node ---
         self.establish_scene_root(scene)
 
+        # Alla fine del metodo, prima di ritornare
+        self.correct_scene_orientation()
+
         self.scene = scene
         print("[INFO] Scene import complete")
         self.print_final_hierarchy()
         return {'FINISHED'}
 
+    def correct_scene_orientation(self):
+        """Correggi l'orientamento globale della scena applicando una rotazione di 90 gradi."""
+        if "[root]" in self.nodes_by_name:
+            root = self.nodes_by_name["[root]"]
+            if root.blender_object:
+                # Applica una rotazione di -90 gradi sull'asse X alla root
+                rotation = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X')
+                root.blender_object.matrix_world = rotation @ root.blender_object.matrix_world
+                print("[INFO] Applied global scene rotation correction")
     def build_hierarchy_manually(self):
         """
         Build the scene hierarchy manually based on known structure.
-        This is a fallback method when the automatic hierarchy building fails.
         """
         print("[INFO] Building hierarchy manually based on node information...")
 
@@ -187,16 +198,7 @@ class OVOImporter:
         for info in self.node_info_list:
             print(f"Node '{info.name}' has {info.children_count} children")
 
-        # ---------------------------------------------
-        # Hard-coded hierarchy based on known structure
-        # ---------------------------------------------
-
-        # 1. Create a list of all nodes that need to be assigned to parents
-        all_nodes = set(self.nodes_by_name.keys())
-        assigned_nodes = set()
-
-        # 2. Define known parent-child relationships
-        # This could be expanded based on the logs or knowledge of the file structure
+        # 1. Definiamo relazioni genitore-figlio
         known_relationships = {
             "[root]": ["Blue_Vans_Shoe", "Cube", "NODO", "Point", "Sun"],
             "NODO": ["Plane"],
@@ -205,56 +207,65 @@ class OVOImporter:
             "Cone.001": ["Cone.002"]
         }
 
-        # 3. Apply the known relationships
+        # 2. First pass: stabilisci le relazioni in memoria
         for parent_name, child_names in known_relationships.items():
             if parent_name not in self.nodes_by_name:
-                print(f"[WARNING] Parent node '{parent_name}' not found in scene")
                 continue
 
             parent_node = self.nodes_by_name[parent_name]
 
             for child_name in child_names:
                 if child_name not in self.nodes_by_name:
-                    print(f"[WARNING] Child node '{child_name}' not found in scene")
                     continue
 
                 child_node = self.nodes_by_name[child_name]
 
-                # Establish parent-child relationship
+                # Relazione in memoria
                 parent_node.add_child(child_node)
                 child_node.parent = parent_node
 
-                # Also update Blender objects
-                if child_node.blender_object and parent_node.blender_object:
-                    child_node.blender_object.parent = parent_node.blender_object
-                    child_node.blender_object.matrix_parent_inverse = parent_node.blender_object.matrix_world.inverted()
-                    print(f"[Hierarchy] Parented '{child_name}' to '{parent_name}'")
-                else:
-                    print(f"[WARNING] Could not parent Blender objects for '{child_name}' to '{parent_name}'")
+        # 3. Second pass: applica le trasformazioni in Blender
+        for parent_name, child_names in known_relationships.items():
+            if parent_name not in self.nodes_by_name:
+                continue
 
-                # Mark this node as assigned
-                assigned_nodes.add(child_name)
+            parent_node = self.nodes_by_name[parent_name]
 
-        # 4. Assign any unassigned nodes to the root
-        unassigned_nodes = all_nodes - assigned_nodes
-        if "[root]" in self.nodes_by_name and unassigned_nodes:
-            root_node = self.nodes_by_name["[root]"]
-            for node_name in unassigned_nodes:
-                if node_name == "[root]":
+            for child_name in child_names:
+                if child_name not in self.nodes_by_name:
                     continue
 
-                child_node = self.nodes_by_name[node_name]
+                child_node = self.nodes_by_name[child_name]
 
-                # Avoid creating loops
-                if not child_node.parent:
-                    root_node.add_child(child_node)
-                    child_node.parent = root_node
+                if child_node.blender_object and parent_node.blender_object:
+                    # Per i figli del root, la trasformazione è già corretta (con conversione)
+                    if parent_name == "[root]":
+                        child_node.blender_object.parent = parent_node.blender_object
+                        child_node.blender_object.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+                    else:
+                        # Per nodi figli di altri nodi, le coordinate sono relative
+                        # e potrebbero aver bisogno di conversione se non sono nodi semplici
 
-                    # Update Blender objects
-                    if child_node.blender_object and root_node.blender_object:
-                        child_node.blender_object.parent = root_node.blender_object
-                        child_node.blender_object.matrix_parent_inverse = root_node.blender_object.matrix_world.inverted()
-                        print(f"[Hierarchy] Parented unassigned node '{node_name}' to '[root]'")
+                        # Imposta la relazione di parentela
+                        child_node.blender_object.parent = parent_node.blender_object
+
+                        # Usa matrix_local diretta senza matrix_parent_inverse
+                        # Se è un nodo semplice, usa la matrice locale originale
+                        if isinstance(child_node, OVONode) and not isinstance(child_node, (OVOMesh, OVOLight)):
+                            # Nodo semplice: usa la matrice locale originale senza conversione
+                            child_node.blender_object.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+                        else:
+                            # Mesh o Light: aggiungi la conversione di coordinate (90° su X)
+                            # Questa è l'inversa della conversione originale
+                            conversion_matrix = mathutils.Matrix([
+                                [1, 0, 0, 0],
+                                [0, 0, 1, 0],
+                                [0, -1, 0, 0],
+                                [0, 0, 0, 1]
+                            ])
+                            child_node.blender_object.matrix_parent_inverse = conversion_matrix
+
+                    print(f"[Hierarchy] Parented '{child_name}' to '{parent_name}'")
 
     def establish_scene_root(self, scene):
         """Find or create a root node for the scene."""
