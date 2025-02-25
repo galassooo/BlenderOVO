@@ -59,12 +59,13 @@ class ChunkType:
     LAST = 25
 
 class OVO_Exporter:
-    def __init__(self, context, filepath, use_mesh=True, use_light=True):
+    def __init__(self, context, filepath, use_mesh=True, use_light=True, compression_format="DXT1"):
         self.context = context
         self.filepath = filepath
-        self.processed_objects = set()
         self.use_mesh = use_mesh
         self.use_light = use_light
+        self.compression_format = compression_format  # Salviamo il formato
+        self.processed_objects = set()
         self.basePath = ""
 
     def should_export_object(self, obj):
@@ -193,6 +194,7 @@ class OVO_Exporter:
 
     @staticmethod
     def compress_texture_to_dds(input_path, output_path=None, format="dxt1"):
+        print("Formato selezionato (compress fun) :", format)
         """Comprime una texture nel formato DDS usando il compressore esterno."""
         if output_path is None:
             output_path = os.path.splitext(input_path)[0] + ".dds"
@@ -282,7 +284,7 @@ class OVO_Exporter:
                             image.save_render(output_path)
                             # Ora comprimi la texture in DDS
                             dds_output = os.path.splitext(output_path)[0] + ".dds"
-                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output)
+                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, format=self.compression_format)
                             if success:
                                 os.remove(output_path)
                                 # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
@@ -302,7 +304,8 @@ class OVO_Exporter:
                             output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
                             try:
                                 dds_output = os.path.splitext(output_path)[0] + ".dds"
-                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output)
+                                print("Formato selezionato (prima compress) :", self.compression_format)
+                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, format=self.compression_format)
                                 if success:
                                     # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
                                     texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
@@ -400,6 +403,7 @@ class OVO_Exporter:
         
         #!!!!!!!!!!!!!! CONVERSIONE MATRICE NODO!!!!!!!!!!!!!!!!!!!
 
+        matrix = obj.matrix_world.copy()
         #copia world matrix
         if obj.parent:
 
@@ -744,6 +748,17 @@ class OVO_PT_export_main(Operator, ExportHelper):
         default=True,
     )
 
+    compression_format: EnumProperty(
+        name="Compressione Texture",
+        description="Seleziona il formato di compressione per le texture",
+        items=[
+            ('DXT1', "DXT1", "Compressione DXT1"),
+            ('BC7', "BC7", "Compressione BC7"),
+            ('BCH6', "BCH6", "Compressione BCH6"),
+        ],
+        default='DXT1'
+    )
+
     def draw(self, context):
         layout = self.layout
 
@@ -753,6 +768,7 @@ class OVO_PT_export_main(Operator, ExportHelper):
         row = box.row()
         row.prop(self, "use_mesh")
         row.prop(self, "use_light")
+        layout.prop(self, "compression_format")
 
     def execute(self, context):
         try:
@@ -762,12 +778,15 @@ class OVO_PT_export_main(Operator, ExportHelper):
             print(f"- Use light: {self.use_light}")
             print(f"- Output path: {self.filepath}")
 
+            print("Formato selezionato (execute) :", self.compression_format)
+
             # Crea l'esportatore
             exporter = OVO_Exporter(
                 context,
                 self.filepath,
                 use_mesh=self.use_mesh,
-                use_light=self.use_light
+                use_light=self.use_light,
+                compression_format=self.compression_format
             )
 
             # Esegui l'export
