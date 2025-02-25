@@ -21,22 +21,22 @@ bl_info = {
 }
 
 # ====================================
-#   OVO File Reader
+#   OVO Chunk
 # ====================================
 class OVOChunk:
     """
     Represents a single chunk in an OVO file.
     """
     def __init__(self, chunk_id, chunk_size, data):
-        self.chunk_id = chunk_id  # Chunk type identifier
-        self.chunk_size = chunk_size  # Size of the chunk data
-        self.data = data  # Raw binary data
+        self.chunk_id = chunk_id      # Chunk type identifier
+        self.chunk_size = chunk_size  # Size of the chunk data (in bytes)
+        self.data = data              # Raw binary data
 
     @staticmethod
     def read_chunk(file):
-        header = file.read(8)  # 4 bytes ID + 4 bytes size
+        header = file.read(8)  # 4 bytes for ID, 4 bytes for size
         if len(header) < 8:
-            return None  # EOF reached
+            return None  # End-of-file reached
         chunk_id, chunk_size = struct.unpack("<II", header)
         data = file.read(chunk_size)
         return OVOChunk(chunk_id, chunk_size, data)
@@ -77,25 +77,33 @@ class OVOImporter:
                 material.blender_material = material.create_blender_material(self.texture_directory)
                 self.materials[material.name] = material
 
-        # --- Create a dedicated global root object ---
-        global_root_obj = bpy.data.objects.new("OVO_Root", None)
-        bpy.context.collection.objects.link(global_root_obj)
-        scene.root = OVONode("OVO_Root", mathutils.Matrix.Identity(4))
-        # Store the Blender object reference for the root (optional)
-        scene.root.blender_object = global_root_obj
-
-        # --- Process Pure Node Chunks (chunk ID 1) ---
-        # For every node chunk, we parse the node tree and attach it as a child of our global root.
+        # --- Process Node Chunks (chunk ID 1) ---
+        # Process each node chunk recursively. Each chunk contains a full node hierarchy.
+        file_nodes = []
         for chunk in self.chunks:
             if chunk.chunk_id == 1:
                 file_obj = io.BytesIO(chunk.data)
-                node = scene.parse_scene_from_file(file_obj)
+                # Top-level call: parent is None so conversion is applied.
+                node = scene.parse_scene_from_file(file_obj, parent=None)
                 if node:
-                    # Attach the parsed node to our global root
-                    scene.root.add_child(node)
-                    child_obj = bpy.data.objects.get(node.name)
-                    if child_obj:
-                        child_obj.parent = global_root_obj
+                    file_nodes.append(node)
+
+        if len(file_nodes) == 0:
+            print("No node chunks found in file.")
+        elif len(file_nodes) == 1:
+            scene.root = file_nodes[0]
+        else:
+            # If more than one top-level node is found, create a global root and parent them.
+            global_root_obj = bpy.data.objects.new("OVO_Root", None)
+            bpy.context.collection.objects.link(global_root_obj)
+            scene.root = OVONode("OVO_Root", mathutils.Matrix.Identity(4))
+            scene.root.blender_object = global_root_obj
+            for node in file_nodes:
+                scene.root.add_child(node)
+                child_obj = bpy.data.objects.get(node.name)
+                if child_obj:
+                    child_obj.parent = global_root_obj
+                    child_obj.matrix_parent_inverse = global_root_obj.matrix_world.inverted()
 
         # --- Process Lights (chunk ID 16) ---
         for chunk in self.chunks:
@@ -132,7 +140,7 @@ class OT_ImportOVO(Operator, ImportHelper):
         return importer.import_scene()
 
 # ====================================
-#  Blender Registration Functions
+#  Blender Registration
 # ====================================
 def menu_func_import(self, context):
     self.layout.operator(OT_ImportOVO.bl_idname, text="OverVision Object (.ovo)")
@@ -153,7 +161,7 @@ if __name__ == "__main__":
     register()
 
 # ====================================
-#  OVO Object Hierarchy
+#  OVO Object Hierarchy Classes
 # ====================================
 class OVOObject:
     """
@@ -161,8 +169,9 @@ class OVOObject:
     """
     def __init__(self, name, matrix):
         self.name = name
-        self.matrix = matrix  # 4x4 transformation matrix
-        self.children = []
+        self.matrix = matrix  # 4x4 transformation matrix (as read from file)
+        self.children = []    # List of child nodes
+        self.blender_object = None  # Reference to the corresponding Blender object
 
     def add_child(self, child):
         self.children.append(child)
@@ -175,7 +184,7 @@ class OVONode(OVOObject):
         super().__init__(name, matrix)
 
 # ====================================
-#  OVO Mesh Class
+#  OVOMesh (Mesh Node) Class
 # ====================================
 class OVOMesh(OVONode):
     """
@@ -195,9 +204,10 @@ class OVOMesh(OVONode):
         mesh_name = OVOScene._read_string(file)
         print(f"\nProcessing MESH: {mesh_name}")
 
-        # Read transformation matrix (16 floats)
+        # Read the raw matrix and convert it here (assuming meshes are top-level).
         matrix_values = struct.unpack('16f', file.read(64))
-        transformation_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        transformation_matrix = OVOScene()._convert_matrix(raw_matrix)
         print(f"Transformation Matrix:\n{transformation_matrix}")
 
         num_children = struct.unpack('I', file.read(4))[0]
@@ -245,7 +255,6 @@ class OVOMesh(OVONode):
             uvs.append(uv)
 
         print(f"Read {len(vertices)} vertices.")
-
         for _ in range(face_count):
             face = struct.unpack('3I', file.read(12))
             faces.append(face)
@@ -274,17 +283,20 @@ class OVOMesh(OVONode):
                 uv_layer.data[i].uv = self.uvs[loop.vertex_index]
 
         obj = bpy.data.objects.new(self.name, mesh_data)
-        corrected_matrix = OVOScene()._convert_matrix(self.matrix)
-        obj.matrix_world = corrected_matrix
+        # For meshes (assumed top-level), the matrix is already converted.
+        obj.matrix_world = self.matrix
         bpy.context.collection.objects.link(obj)
         print(f"Blender Mesh Created: {self.name}, Vertices: {len(self.vertices)}, Faces: {len(self.faces)}")
         self.blender_object = obj
         return obj
 
 # ====================================
-#  OVO Material Class
+#  OVOMaterial (Material) Class
 # ====================================
 class OVOMaterial:
+    """
+    Represents a material from the OVO file.
+    """
     def __init__(self, name, base_color, roughness, metallic, transparency, emissive, textures):
         self.name = name
         self.base_color = base_color
@@ -314,58 +326,28 @@ class OVOMaterial:
     def create_blender_material(self, texture_directory):
         mat = bpy.data.materials.new(name=self.name)
         mat.use_nodes = True
-
-        # Find the Principled BSDF node
+        # Find the Principled BSDF node.
         bsdf = None
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
                 bsdf = node
                 break
-
         if bsdf is None:
             print(f"Error: Principled BSDF node not found in material {self.name}")
             return mat
-
-        if "Base Color" in bsdf.inputs:
-            bsdf.inputs["Base Color"].default_value = (*self.base_color, 1.0)
-        if "Roughness" in bsdf.inputs:
-            bsdf.inputs["Roughness"].default_value = self.roughness
-        if "Metallic" in bsdf.inputs:
-            bsdf.inputs["Metallic"].default_value = self.metallic
-
-        if "Alpha" in bsdf.inputs and self.transparency < 1.0:
+        bsdf.inputs["Base Color"].default_value = (*self.base_color, 1.0)
+        bsdf.inputs["Roughness"].default_value = self.roughness
+        bsdf.inputs["Metallic"].default_value = self.metallic
+        if self.transparency < 1.0:
             mat.blend_method = 'BLEND'
             mat.shadow_method = 'HASHED'
             bsdf.inputs["Alpha"].default_value = self.transparency
-
         if "Emission" in bsdf.inputs:
             bsdf.inputs["Emission"].default_value = (*self.emissive, 1.0)
         else:
-            print(f"Warning: 'Emission' input not found in Principled BSDF for material {self.name}. Skipping emission assignment.")
-
+            print(f"Warning: 'Emission' input not found in material {self.name}. Skipping emission.")
         self.blender_material = mat
         return mat
-
-    def _add_texture(self, material, bsdf, texture_path, texture_type):
-        nodes = material.node_tree.nodes
-        links = material.node_tree.links
-        tex_image = nodes.new(type="ShaderNodeTexImage")
-        tex_image.image = bpy.data.images.load(texture_path)
-        tex_image.label = texture_type.capitalize()
-        texture_slots = {
-            "albedo": "Base Color",
-            "normal": "Normal",
-            "height": "Displacement",
-            "roughness": "Roughness",
-            "metalness": "Metallic"
-        }
-        if texture_type in texture_slots:
-            if texture_type == "normal":
-                normal_map = nodes.new(type="ShaderNodeNormalMap")
-                links.new(tex_image.outputs["Color"], normal_map.inputs["Color"])
-                links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
-            else:
-                links.new(tex_image.outputs["Color"], bsdf.inputs[texture_slots[texture_type]])
 
     def apply_to_mesh(self, mesh_obj):
         if not self.blender_material:
@@ -377,9 +359,12 @@ class OVOMaterial:
             mesh_obj.data.materials[0] = self.blender_material
 
 # ====================================
-#  OVO Light Class
+#  OVOLight (Light Node) Class
 # ====================================
 class OVOLight(OVONode):
+    """
+    Represents a light node.
+    """
     def __init__(self, name, matrix, light_type, color, radius, direction, cutoff, spot_exponent, shadow, volumetric):
         super().__init__(name, matrix)
         self.light_type = light_type
@@ -393,10 +378,18 @@ class OVOLight(OVONode):
 
     @staticmethod
     def parse_light(chunk_data):
+        # Always wrap the chunk_data bytes in a BytesIO object.
         file = io.BytesIO(chunk_data)
         name = OVOScene._read_string(file)
-        matrix_values = struct.unpack("<16f", file.read(64))
-        matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        # Read 64 bytes for the matrix; if insufficient data, report error.
+        matrix_bytes = file.read(64)
+        if len(matrix_bytes) < 64:
+            print("Error: Not enough data for light matrix.")
+            return None
+        matrix_values = struct.unpack("<16f", matrix_bytes)
+        # For lights (assumed top-level), convert the matrix.
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        matrix = OVOScene()._convert_matrix(raw_matrix)
         num_children = struct.unpack("<I", file.read(4))[0]
         target_name = OVOScene._read_string(file)
         light_type = struct.unpack("<B", file.read(1))[0]
@@ -419,58 +412,84 @@ class OVOLight(OVONode):
             light_data.spot_size = self.cutoff
             light_data.spot_blend = self.spot_exponent / 10.0
         light_data.use_shadow = bool(self.shadow)
-        corrected_matrix = OVOScene()._convert_matrix(self.matrix)
-        light_obj.matrix_world = corrected_matrix
-        light_obj.location = corrected_matrix.translation
+        # Lights are top-level; use the already converted matrix.
+        light_obj.matrix_world = self.matrix
+        light_obj.location = self.matrix.translation
         bpy.context.collection.objects.link(light_obj)
-        print(f" Created Light: {self.name} at {light_obj.location}")
+        print(f"Created Light: {self.name} at {light_obj.location}")
         self.blender_object = light_obj
         return light_obj
 
 # ====================================
-#  OVO Scene Class
+#  OVOScene (Scene Graph) Class
 # ====================================
 class OVOScene:
+    """
+    Represents the scene graph.
+    """
     def __init__(self):
         self.root = None
 
-    def parse_scene_from_file(self, file, default_name_prefix="Node", counter=[0]):
+    def parse_scene_from_file(self, file, parent=None, default_name_prefix="Node", counter=[0]):
         start_pos = file.tell()
         node_name = self._read_string(file)
         if not node_name:
             node_name = f"{default_name_prefix}_{counter[0]}"
             counter[0] += 1
             print(f"Warning: Node name empty. Using {node_name}")
+        # Check that there are enough bytes for a matrix.
         if file.tell() + 64 > len(file.getbuffer()):
             print("Error: Not enough data for transformation matrix.")
             file.seek(start_pos)
             return None
-        matrix_values = struct.unpack("<16f", file.read(64))
-        matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        matrix_bytes = file.read(64)
+        if len(matrix_bytes) < 64:
+            print("Error: Matrix data incomplete.")
+            file.seek(start_pos)
+            return None
+        matrix_values = struct.unpack("<16f", matrix_bytes)
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0, 16, 4)])
+        # For top-level nodes, apply conversion; for children, assume local transform.
+        if parent is None:
+            matrix = self._convert_matrix(raw_matrix)
+        else:
+            matrix = raw_matrix
+        # Read number of children.
         if file.tell() + 4 > len(file.getbuffer()):
             print("Error: Not enough data for child count.")
             file.seek(start_pos)
             return None
-        num_children = struct.unpack("<I", file.read(4))[0]
-        parent_name = self._read_string(file)
-        matrix = self._convert_matrix(matrix)
+        child_count_bytes = file.read(4)
+        if len(child_count_bytes) < 4:
+            print("Error: Child count data incomplete.")
+            file.seek(start_pos)
+            return None
+        num_children = struct.unpack("<I", child_count_bytes)[0]
+        # Read and discard target node string.
+        _ = self._read_string(file)
+        # Create the node.
         node = OVONode(node_name, matrix)
+        # Create a Blender object for the node.
         if node_name in bpy.data.objects:
             blender_obj = bpy.data.objects[node_name]
         else:
             blender_obj = bpy.data.objects.new(node_name, None)
             bpy.context.collection.objects.link(blender_obj)
-        blender_obj.matrix_world = matrix
-        children_parsed = 0
-        while children_parsed < num_children and file.tell() < len(file.getbuffer()):
-            child = self.parse_scene_from_file(file, default_name_prefix, counter)
+        # If top-level, set as world matrix; otherwise, set as local.
+        if parent is None:
+            blender_obj.matrix_world = matrix
+        else:
+            blender_obj.matrix_local = matrix
+        # Process children recursively.
+        for i in range(num_children):
+            child = self.parse_scene_from_file(file, parent=node, default_name_prefix=default_name_prefix, counter=counter)
             if child is None:
                 break
             node.add_child(child)
             child_obj = bpy.data.objects.get(child.name)
             if child_obj:
                 child_obj.parent = blender_obj
-            children_parsed += 1
+                child_obj.matrix_parent_inverse = blender_obj.matrix_world.inverted()
         return node
 
     @staticmethod
@@ -485,7 +504,8 @@ class OVOScene:
 
     def _convert_matrix(self, matrix):
         print(f"Original OVO Matrix for node:\n{matrix}")
-        matrix.transpose()  # Convert from row-major to column-major
+        # Transpose the raw matrix from row-major to column-major.
+        matrix.transpose()
         conversion_matrix = mathutils.Matrix([
             [1, 0, 0, 0],
             [0, 0, -1, 0],
@@ -497,9 +517,9 @@ class OVOScene:
         return converted_matrix
 
 # ====================================
-# Main execution
+# Main Execution
 # ====================================
-"""""
+
 if __name__ == "__main__":
     bpy.app.debug = False
     filepath = "C:\\Users\\kevin\\Downloads\\output.ovo"
@@ -515,4 +535,3 @@ if __name__ == "__main__":
         for obj in bpy.data.objects:
             print(f"- {obj.name}: {obj.type}, Location: {obj.location}")
         print("Debugging Complete.")
-"""
