@@ -171,22 +171,12 @@ class OVOImporter:
         self.establish_scene_root(scene)
 
         # Alla fine del metodo, prima di ritornare
-        self.correct_scene_orientation()
 
-        self.scene = scene
         print("[INFO] Scene import complete")
         self.print_final_hierarchy()
         return {'FINISHED'}
 
-    def correct_scene_orientation(self):
-        """Correggi l'orientamento globale della scena applicando una rotazione di 90 gradi."""
-        if "[root]" in self.nodes_by_name:
-            root = self.nodes_by_name["[root]"]
-            if root.blender_object:
-                # Applica una rotazione di -90 gradi sull'asse X alla root
-                rotation = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X')
-                root.blender_object.matrix_world = rotation @ root.blender_object.matrix_world
-                print("[INFO] Applied global scene rotation correction")
+
     def build_hierarchy_manually(self):
         """
         Build the scene hierarchy manually based on known structure.
