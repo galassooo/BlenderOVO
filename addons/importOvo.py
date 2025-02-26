@@ -5,7 +5,7 @@ bl_info = {
     "name": "OVO Format Importer",
     "author": "Martina",
     "version": (1, 0),
-    "blender": (4, 0, 0),  # Adatta questa versione alla tua versione di Blender
+    "blender": (4, 2, 0),
     "location": "File > Import > OverVision Object (.ovo)",
     "description": "Import an OVO scene file into Blender",
     "category": "Import-Export",
@@ -20,17 +20,23 @@ from bpy_extras.io_utils import ImportHelper
 from bpy.types import Operator
 from bpy.props import StringProperty
 
-
 # ===================================
 #   Node Information Storage
 # ===================================
-class NodeInfo:
-    """Store information about a node for hierarchy construction."""
-
-    def __init__(self, name, children_count):
+class NodeRecord:
+    """
+    Struttura di appoggio per tenere traccia di:
+    - Nome del nodo
+    - Tipo ("NODE", "MESH", "LIGHT")
+    - Numero di figli attesi (children_count)
+    - Oggetto Blender già creato (blender_object)
+    """
+    def __init__(self, name, node_type, children_count, blender_object):
         self.name = name
+        self.node_type = node_type  # "NODE", "MESH" o "LIGHT"
         self.children_count = children_count
-        self.child_nodes = []  # Will be populated during hierarchy building
+        self.blender_object = blender_object
+        self.parent = None
 
 
 # ====================================
@@ -46,7 +52,11 @@ class OVOChunk:
 
     @staticmethod
     def read_chunk(file):
-        header = file.read(8)  # 4 bytes for ID, 4 bytes for size
+        """
+        Legge 8 byte (ID e size) e poi i successivi chunk_size byte come 'data'.
+        Restituisce None se siamo a fine file.
+        """
+        header = file.read(8)
         if len(header) < 8:
             return None  # End-of-file reached
         chunk_id, chunk_size = struct.unpack("<II", header)
@@ -59,8 +69,9 @@ class OVOChunk:
 # ====================================
 class OVOImporter:
     """
-    Handles reading and parsing of OVO files.
-    Loads materials, nodes, lights and meshes.
+    Classe principale che si occupa del caricamento del file OVO,
+    della creazione di materiali/nodi/luci/mesh in Blender e
+    della costruzione della gerarchia.
     """
 
     def __init__(self, filepath):
@@ -69,383 +80,360 @@ class OVOImporter:
         self.materials = {}
         self.texture_directory = os.path.dirname(filepath)
         self.scene = None
-        # Dictionary to store all created nodes by name
-        self.nodes_by_name = {}
-        # List to store node info for hierarchy building
-        self.node_info_list = []
-        # Known parent-child relationships for mesh nodes
-        self.mesh_children = {}
+
+        # Elenco (in ordine di lettura) dei nodi/mesh/light: NodeRecord
+        self.parsed_nodes = []
 
     def read_ovo_file(self):
+        """Legge tutti i chunk dal file e li memorizza in self.chunks."""
         with open(self.filepath, "rb") as file:
             while True:
                 chunk = OVOChunk.read_chunk(file)
                 if chunk is None:
                     break
                 self.chunks.append(chunk)
-        print(f"[INFO] Successfully read {len(self.chunks)} chunks from {self.filepath}")
+
+        print(f"[INFO] Lettura completata di {len(self.chunks)} chunk.")
         return True
 
     def import_scene(self):
+        """Funzione principale di import. Restituisce {'FINISHED'} o {'CANCELLED'}."""
         if not self.read_ovo_file():
             return {'CANCELLED'}
 
-        # Create a new scene graph
-        scene = OVOScene()
+        # 1) Analizza i chunk e crea materiali + strutture di appoggio
+        self.parse_chunks()
 
-        # --- Process Material Chunks (chunk ID 9) ---
-        for chunk in self.chunks:
-            if chunk.chunk_id == 9:
-                print("[INFO] Processing Material chunk")
-                material = OVOMaterial.parse_material(chunk.data)
-                material.blender_material = material.create_blender_material(self.texture_directory)
-                self.materials[material.name] = material
+        # 2) Costruisce la gerarchia basandosi sullo stack (ordine di lettura)
+        self.build_hierarchy_stack_approach()
 
-        # --- Process Node Chunks (chunk ID 1) and collect hierarchy info ---
-        for chunk in self.chunks:
-            if chunk.chunk_id == 1:
-                print("[INFO] Processing Node chunk")
-                file_obj = io.BytesIO(chunk.data)
+        # 3) Crea (o individua) un root fittizio se necessario
+        self.establish_root_node()
 
-                # Read node name
-                node_name = OVOScene._read_string(file_obj)
-
-                # Read matrix
-                matrix_bytes = file_obj.read(64)
-                matrix_values = struct.unpack("<16f", matrix_bytes)
-                matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
-                matrix = OVOScene()._convert_matrix(matrix)
-
-                # Read children count
-                children_count = struct.unpack("<I", file_obj.read(4))[0]
-
-                # Skip target node string
-                _ = OVOScene._read_string(file_obj)
-
-                # Create node
-                node = OVONode(node_name, matrix)
-                node_obj = bpy.data.objects.new(node_name, None)
-                bpy.context.collection.objects.link(node_obj)
-                node_obj.matrix_world = matrix
-                node.blender_object = node_obj
-
-                # Store node in dictionary
-                self.nodes_by_name[node_name] = node
-
-                # Store node info for hierarchy building
-                self.node_info_list.append(NodeInfo(node_name, children_count))
-
-                print(f"[Node] Created node '{node_name}' with {children_count} children.")
-
-        # --- Process Light Chunks (chunk ID 16) ---
-        for chunk in self.chunks:
-            if chunk.chunk_id == 16:
-                print("[INFO] Processing Light chunk")
-                light = OVOLight.parse_light(chunk.data)
-                if light:
-                    light.create_blender_light()
-                    self.nodes_by_name[light.name] = light
-
-        # --- Process Mesh Chunks (chunk ID 18) and collect hierarchy info ---
-        for chunk in self.chunks:
-            if chunk.chunk_id == 18:
-                print("[INFO] Processing Mesh chunk")
-                mesh, children_count = OVOMesh.parse_mesh_with_children(chunk.data)
-                if mesh:
-                    mesh.create_blender_mesh()
-                    if mesh.material in self.materials:
-                        mat = self.materials[mesh.material]
-                        if mat.blender_material:
-                            mat.apply_to_mesh(mesh.blender_object)
-
-                    self.nodes_by_name[mesh.name] = mesh
-
-                    # Store node info for hierarchy building
-                    self.node_info_list.append(NodeInfo(mesh.name, children_count))
-                    print(f"[Mesh] Stored node info for '{mesh.name}' with {children_count} children.")
-
-        # --- Build the hierarchy using node info ---
-        self.build_hierarchy_manually()
-
-        # --- Find or create root node ---
-        self.establish_scene_root(scene)
-
-        # Alla fine del metodo, prima di ritornare
-
-        print("[INFO] Scene import complete")
+        print("\n[FINAL HIERARCHY]")
         self.print_final_hierarchy()
+
         return {'FINISHED'}
 
-
-    def build_hierarchy_manually(self):
+    def parse_chunks(self):
         """
-        Build the scene hierarchy manually based on known structure.
+        Esegue un'unica passata su self.chunks nell'ordine in cui sono stati letti:
+        - Se chunk è material (ID=9), parse e crea blender material
+        - Se chunk è node (ID=1) => parse e crea OVONode + NodeRecord
+        - Se chunk è light (ID=16) => parse e crea OVOLight + NodeRecord
+        - Se chunk è mesh (ID=18) => parse e crea OVOMesh + NodeRecord
+        - Altri chunk ignorati
         """
-        print("[INFO] Building hierarchy manually based on node information...")
+        for chunk in self.chunks:
+            cid = chunk.chunk_id
 
-        # Print all nodes and their children counts
-        print("\n[NODE INFO LIST]")
-        for info in self.node_info_list:
-            print(f"Node '{info.name}' has {info.children_count} children")
-
-        # 1. Definiamo relazioni genitore-figlio
-        known_relationships = {
-            "[root]": ["Blue_Vans_Shoe", "Cube", "NODO", "Point", "Sun"],
-            "NODO": ["Plane"],
-            "Plane": ["Cone"],
-            "Cone": ["Cone.001"],
-            "Cone.001": ["Cone.002"]
-        }
-
-        # 2. First pass: stabilisci le relazioni in memoria
-        for parent_name, child_names in known_relationships.items():
-            if parent_name not in self.nodes_by_name:
+            # --- Materiali (chunk ID 9) ---
+            if cid == 9:
+                material = OVOMaterial.parse_material(chunk.data)
+                mat = material.create_blender_material(self.texture_directory)
+                self.materials[material.name] = material
                 continue
 
-            parent_node = self.nodes_by_name[parent_name]
+            # --- Node generico (chunk ID 1) ---
+            if cid == 1:
+                node_name, matrix, children_count = self.parse_node_basic(chunk.data)
+                node_obj = bpy.data.objects.new(node_name, None)
+                bpy.context.collection.objects.link(node_obj)
 
-            for child_name in child_names:
-                if child_name not in self.nodes_by_name:
-                    continue
+                # Assegno la trasformazione (già convertita)
+                node_obj.matrix_world = matrix
 
-                child_node = self.nodes_by_name[child_name]
-
-                # Relazione in memoria
-                parent_node.add_child(child_node)
-                child_node.parent = parent_node
-
-        # 3. Second pass: applica le trasformazioni in Blender
-        for parent_name, child_names in known_relationships.items():
-            if parent_name not in self.nodes_by_name:
+                record = NodeRecord(name=node_name,
+                                    node_type="NODE",
+                                    children_count=children_count,
+                                    blender_object=node_obj)
+                self.parsed_nodes.append(record)
                 continue
 
-            parent_node = self.nodes_by_name[parent_name]
+            # --- Light (chunk ID 16) ---
+            if cid == 16:
+                light_name, matrix, children_count, light_data = OVOLight.parse_light(chunk.data)
+                # Crea la light in Blender
+                light_obj = bpy.data.objects.new(light_name, light_data)
+                bpy.context.collection.objects.link(light_obj)
+                light_obj.matrix_world = matrix
 
-            for child_name in child_names:
-                if child_name not in self.nodes_by_name:
-                    continue
+                record = NodeRecord(name=light_name,
+                                    node_type="LIGHT",
+                                    children_count=children_count,
+                                    blender_object=light_obj)
+                self.parsed_nodes.append(record)
+                continue
 
-                child_node = self.nodes_by_name[child_name]
+            # --- Mesh (chunk ID 18) ---
+            if cid == 18:
+                (mesh_name, matrix, children_count,
+                 material_name, mesh_obj) = OVOMesh.parse_mesh_with_children(chunk.data)
 
-                if child_node.blender_object and parent_node.blender_object:
-                    # Per i figli del root, la trasformazione è già corretta (con conversione)
-                    if parent_name == "[root]":
-                        child_node.blender_object.parent = parent_node.blender_object
-                        child_node.blender_object.matrix_parent_inverse = mathutils.Matrix.Identity(4)
-                    else:
-                        # Per nodi figli di altri nodi, le coordinate sono relative
-                        # e potrebbero aver bisogno di conversione se non sono nodi semplici
-
-                        # Imposta la relazione di parentela
-                        child_node.blender_object.parent = parent_node.blender_object
-
-                        # Usa matrix_local diretta senza matrix_parent_inverse
-                        # Se è un nodo semplice, usa la matrice locale originale
-                        if isinstance(child_node, OVONode) and not isinstance(child_node, (OVOMesh, OVOLight)):
-                            # Nodo semplice: usa la matrice locale originale senza conversione
-                            child_node.blender_object.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+                # Se esiste un materiale omonimo, assegnalo alla mesh
+                if material_name in self.materials:
+                    mat = self.materials[material_name].blender_material
+                    if mat:
+                        if not mesh_obj.data.materials:
+                            mesh_obj.data.materials.append(mat)
                         else:
-                            # Mesh o Light: aggiungi la conversione di coordinate (90° su X)
-                            # Questa è l'inversa della conversione originale
-                            conversion_matrix = mathutils.Matrix([
-                                [1, 0, 0, 0],
-                                [0, 0, 1, 0],
-                                [0, -1, 0, 0],
-                                [0, 0, 0, 1]
-                            ])
-                            child_node.blender_object.matrix_parent_inverse = conversion_matrix
+                            mesh_obj.data.materials[0] = mat
 
-                    print(f"[Hierarchy] Parented '{child_name}' to '{parent_name}'")
+                mesh_obj.matrix_world = matrix
+                bpy.context.collection.objects.link(mesh_obj)
 
-    def establish_scene_root(self, scene):
-        """Find or create a root node for the scene."""
-        # Check if a node named "[root]" exists
-        root_node = self.nodes_by_name.get("[root]")
+                record = NodeRecord(name=mesh_name,
+                                    node_type="MESH",
+                                    children_count=children_count,
+                                    blender_object=mesh_obj)
+                self.parsed_nodes.append(record)
+                continue
 
-        if root_node:
-            scene.root = root_node
-            print(f"[INFO] Using existing node '{scene.root.name}' as scene root.")
-        else:
-            # Find all nodes with no parents
-            orphan_nodes = []
-            for name, node in self.nodes_by_name.items():
-                if not hasattr(node, 'parent') or node.parent is None:
-                    orphan_nodes.append(node)
+            # Altri chunk ignorati
+            # print(f"[WARNING] Chunk ID={cid} ignorato.")
 
-            if len(orphan_nodes) == 1:
-                scene.root = orphan_nodes[0]
-                print(f"[INFO] Single top-level node '{scene.root.name}' used as scene root.")
-            else:
-                # Create a new root node
-                print(f"[INFO] Creating new '[root]' node for {len(orphan_nodes)} orphan nodes.")
-                root_node = OVONode("[root]", mathutils.Matrix.Identity(4))
-                root_obj = bpy.data.objects.new("[root]", None)
-                bpy.context.collection.objects.link(root_obj)
-                root_node.blender_object = root_obj
+    def build_hierarchy_stack_approach(self):
+        """
+        Ricostruisce la gerarchia usando un approccio stack-based,
+        in cui i nodi vengono presi nell'ordine di lettura.
+        Esempio di logica (simile a OvoReader.cpp):
+          - Se lo stack è vuoto, il nodo corrente è "top-level"
+          - Altrimenti lo stack.top è il suo genitore.
+          - Decrementa di 1 il children_count del genitore.
+            Se va a 0, il genitore viene poppato dallo stack.
+          - Se il nodo corrente ha children_count > 0, push nel stack.
+        """
+        stack = []
 
-                # Add all orphan nodes as children
-                for node in orphan_nodes:
-                    root_node.add_child(node)
-                    node.parent = root_node
+        for record in self.parsed_nodes:
+            # Rimuovi dallo stack tutti i nodi in cima che hanno esaurito i figli
+            while stack and stack[-1].children_count == 0:
+                stack.pop()
 
-                    # Update Blender objects
-                    if node.blender_object:
-                        node.blender_object.parent = root_obj
-                        node.blender_object.matrix_parent_inverse = root_obj.matrix_world.inverted()
+            # Se lo stack non è vuoto, il top è il genitore
+            if stack:
+                parent_record = stack[-1]
+                record.parent = parent_record
+                parent_record.children_count -= 1
 
-                self.nodes_by_name["[root]"] = root_node
-                scene.root = root_node
+            # Se il nodo corrente ha children_count > 0, pusha
+            if record.children_count > 0:
+                stack.append(record)
+
+        # Ora in record.parent abbiamo le relazioni parent-figlio.
+
+        # Imposto in Blender la parentela
+        for rec in self.parsed_nodes:
+            if rec.parent is not None:
+                parent_obj = rec.parent.blender_object
+                child_obj = rec.blender_object
+                child_obj.parent = parent_obj
+                # Poiché abbiamo già assegnato matrix_world al child, e
+                # vogliamo che rimanga "dov'è" in scena, impostiamo matrix_parent_inverse
+                # uguale a parent_obj.matrix_world.inverted().
+                child_obj.matrix_parent_inverse = parent_obj.matrix_world.inverted()
+
+    def establish_root_node(self):
+        """
+        Facoltativo: se esiste un nodo chiamato '[root]', lo usiamo come root.
+        Altrimenti, se ci sono più nodi top-level, potremmo creare un oggetto fittizio
+        e metterli tutti come figli.
+        """
+        # 1) Trova eventuale nodo con name = '[root]'
+        root_record = None
+        for rec in self.parsed_nodes:
+            if rec.name == "[root]":
+                root_record = rec
+                break
+
+        if root_record:
+            print(f"[INFO] Usa il nodo '{root_record.name}' come root.")
+            return
+
+        # 2) Calcola quanti nodi non hanno parent
+        toplevel_nodes = [rec for rec in self.parsed_nodes if rec.parent is None]
+        if len(toplevel_nodes) <= 1:
+            # Un solo nodo top-level (o zero) => va già bene così
+            return
+
+        # 3) Crea un root fittizio
+        print(f"[INFO] Creazione di un nodo [root] fittizio per {len(toplevel_nodes)} nodi top-level.")
+        root_obj = bpy.data.objects.new("[root]", None)
+        bpy.context.collection.objects.link(root_obj)
+        root_obj.matrix_world = mathutils.Matrix.Identity(4)
+
+        # Imposta la parentela
+        for rec in toplevel_nodes:
+            child_obj = rec.blender_object
+            child_obj.parent = root_obj
+            child_obj.matrix_parent_inverse = root_obj.matrix_world.inverted()
 
     def print_final_hierarchy(self):
-        """Print the hierarchy of the imported scene."""
-        print("\n[FINAL SCENE HIERARCHY]")
-        if self.scene and self.scene.root:
-            self.scene.root.print_hierarchy()
-        else:
-            print("No scene graph available.")
+        """Stampa a console la gerarchia risultante."""
+        # Costruisce un mapping "nome -> record" per comodità
+        name_to_record = {rec.name: rec for rec in self.parsed_nodes}
 
+        # Trova tutti i top-level (parent=None)
+        toplevel = [rec for rec in self.parsed_nodes if rec.parent is None]
 
-# ====================================
-#  OVO Object Hierarchy Classes
-# ====================================
-class OVOObject:
-    """Base class for all OVO objects in the scene hierarchy."""
+        def _print_rec(rec, indent=0):
+            print("  " * indent + f"+ {rec.name} ({rec.node_type})")
+            # cerca i figli
+            for child in self.parsed_nodes:
+                if child.parent == rec:
+                    _print_rec(child, indent+1)
 
-    def __init__(self, name, matrix):
-        self.name = name
-        self.matrix = matrix  # 4x4 transformation matrix
-        self.children = []  # List of child nodes
-        self.parent = None  # Reference to parent node
-        self.blender_object = None  # Reference to the corresponding Blender object
+        for rec in toplevel:
+            _print_rec(rec)
 
-    def add_child(self, child):
-        self.children.append(child)
+    # ---------------------------------------------------
+    # Funzioni di parsing di un singolo nodo/mesh/light
+    # ---------------------------------------------------
+    def parse_node_basic(self, chunk_data):
+        """
+        Legge i campi di un generico 'Node' (chunk ID=1) e restituisce:
+        (node_name, matrixConvertita, children_count)
+        """
+        file_obj = io.BytesIO(chunk_data)
 
-    def print_hierarchy(self, indent=0):
-        print("  " * indent + "+ " + self.name)
-        for child in self.children:
-            child.print_hierarchy(indent + 1)
+        # Legge nome
+        node_name = OVOScene._read_string(file_obj)
 
+        # Legge 16 float
+        matrix_bytes = file_obj.read(64)
+        matrix_values = struct.unpack("<16f", matrix_bytes)
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0,16,4)])
 
-class OVONode(OVOObject):
-    """Represents a generic node in the OVO scenegraph."""
+        # Legge children_count
+        children_count = struct.unpack("<I", file_obj.read(4))[0]
 
-    def __init__(self, name, matrix):
-        super().__init__(name, matrix)
+        # Salta il target node
+        _ = OVOScene._read_string(file_obj)
+
+        # Converte la matrice in Blender
+        matrix = OVOScene()._convert_matrix(raw_matrix)
+
+        return node_name, matrix, children_count
 
 
 # ====================================
 #  OVOMesh (Mesh Node) Class
 # ====================================
-class OVOMesh(OVONode):
-    """Represents a 3D mesh node."""
-
-    def __init__(self, name, matrix, material, vertices, normals, uvs, faces):
-        super().__init__(name, matrix)
-        self.material = material
-        self.vertices = vertices
-        self.normals = normals
-        self.uvs = uvs
-        self.faces = faces
+class OVOMesh:
+    """
+    Classe d'appoggio per il parsing di un chunk di tipo MESH (ID=18).
+    Qui non memorizziamo nulla a lungo termine, ci limitiamo a restituire
+    i dati parse_mesh_with_children().
+    """
 
     @staticmethod
     def parse_mesh_with_children(chunk_data):
+        """
+        Legge i dati essenziali di una mesh e ritorna:
+          (mesh_name, matrix, children_count, material_name, mesh_object)
+        """
         file = io.BytesIO(chunk_data)
         mesh_name = OVOScene._read_string(file)
-        print(f"\n[Mesh] Processing: {mesh_name}")
 
         matrix_bytes = file.read(64)
-        if len(matrix_bytes) < 64:
-            print(f"[Mesh] Error: Not enough data for mesh '{mesh_name}' transformation matrix.")
-            return None, 0
         matrix_values = struct.unpack('16f', matrix_bytes)
-        raw_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
-        # Assume meshes are top-level so apply conversion.
-        transformation_matrix = OVOScene()._convert_matrix(raw_matrix)
-        print(f"[Mesh] '{mesh_name}' Transformation Matrix:\n{transformation_matrix}")
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0,16,4)])
+        matrix = OVOScene()._convert_matrix(raw_matrix)
 
-        num_children = struct.unpack('I', file.read(4))[0]
-        print(f"[Mesh] '{mesh_name}' has {num_children} children")
-        target_node = OVOScene._read_string(file)
+        children_count = struct.unpack('I', file.read(4))[0]
+        _ = OVOScene._read_string(file)  # target node (ignorato qui)
         mesh_subtype = struct.unpack('B', file.read(1))[0]
-        print(f"[Mesh] Subtype: {mesh_subtype}")
 
         material_name = OVOScene._read_string(file)
-        print(f"[Mesh] Material: {material_name}")
 
-        radius = struct.unpack('f', file.read(4))[0]
-        min_box = struct.unpack('3f', file.read(12))
-        max_box = struct.unpack('3f', file.read(12))
-        print(f"[Mesh] '{mesh_name}' Bounding Box: min {min_box}, max {max_box}, radius {radius}")
-
+        # salta bounding sphere, bounding box, ecc. finché non arriviamo ai vertici
+        file.seek(4 + 12 + 12, 1)  # radius + minBox + maxBox
         physics_flag = struct.unpack('B', file.read(1))[0]
-        print(f"[Mesh] '{mesh_name}' Physics Flag: {physics_flag}")
+        if physics_flag:
+            # salta i dati di fisica
+            # NB: la dimensione esatta dipende dalla struttura, qui semplificato
+            # in un contesto reale dovremmo leggere con precisione
+            pass_len = OVOMesh._skip_physics_data(file)
 
         lod_count = struct.unpack('I', file.read(4))[0]
-        print(f"[Mesh] '{mesh_name}' Number of LODs: {lod_count}")
+        if lod_count == 0:
+            # caso limite
+            mesh_data = bpy.data.meshes.new(mesh_name)
+            obj = bpy.data.objects.new(mesh_name, mesh_data)
+            return mesh_name, matrix, children_count, material_name, obj
 
+        # Per semplicità leggiamo solo LOD0
         vertex_count, face_count = struct.unpack('2I', file.read(8))
-        print(f"[Mesh] '{mesh_name}' Vertices: {vertex_count}, Faces: {face_count}")
 
-        vertices, normals, uvs, faces = [], [], [], []
+        vertices = []
+        faces = []
+
         for _ in range(vertex_count):
+            # posizione (3 float)
             pos = struct.unpack('3f', file.read(12))
-            normal_data = struct.unpack('I', file.read(4))[0]
-            uv_data = struct.unpack('I', file.read(4))[0]
-            _ = file.read(4)  # Tangent (ignored)
-
-            nx = ((normal_data & 0x3FF) / 511.0) * 2.0 - 1.0
-            ny = (((normal_data >> 10) & 0x3FF) / 511.0) * 2.0 - 1.0
-            nz = (((normal_data >> 20) & 0x3FF) / 511.0) * 2.0 - 1.0
-            normal = (nx, ny, nz)
-            u = ((uv_data & 0xFFFF) / 65535.0)
-            v = (((uv_data >> 16) & 0xFFFF) / 65535.0)
-            uv = (u, v)
-
+            # normal data (1 uint)
+            _normalData = struct.unpack('I', file.read(4))[0]
+            # uv data (1 uint)
+            _uvData = struct.unpack('I', file.read(4))[0]
+            # tangent (1 uint)
+            _ = file.read(4)
             vertices.append(pos)
-            normals.append(normal)
-            uvs.append(uv)
-        print(f"[Mesh] '{mesh_name}': Read {len(vertices)} vertices.")
+
         for _ in range(face_count):
             face = struct.unpack('3I', file.read(12))
             faces.append(face)
-        print(f"[Mesh] '{mesh_name}': Read {len(faces)} faces.")
 
-        return OVOMesh(mesh_name, transformation_matrix, material_name, vertices, normals, uvs, faces), num_children
+        # Crea la mesh
+        mesh_data = bpy.data.meshes.new(mesh_name)
+        mesh_data.from_pydata(vertices, [], faces)
+        mesh_data.update()
 
-    def create_blender_mesh(self):
-        if not self.faces:
-            print(f"[Mesh] Warning: Mesh {self.name} has no faces.")
-        mesh_data = bpy.data.meshes.new(self.name)
-        if self.vertices and self.faces:
-            mesh_data.from_pydata(self.vertices, [], self.faces)
-        else:
-            print(f"[Mesh] Error: Mesh {self.name} has no valid faces.")
-        if self.normals:
-            mesh_data.validate()
-            mesh_data.update()
-            mesh_data.normals_split_custom_set_from_vertices(self.normals)
-        if self.uvs:
-            uv_layer = mesh_data.uv_layers.new()
-            for i, loop in enumerate(mesh_data.loops):
-                uv_layer.data[i].uv = self.uvs[loop.vertex_index]
-        obj = bpy.data.objects.new(self.name, mesh_data)
-        # For meshes assumed top-level, the matrix is already converted.
-        obj.matrix_world = self.matrix
-        bpy.context.collection.objects.link(obj)
-        print(f"[Mesh] Created Blender Mesh: {self.name}")
-        self.blender_object = obj
-        return obj
+        mesh_object = bpy.data.objects.new(mesh_name, mesh_data)
 
+        return mesh_name, matrix, children_count, material_name, mesh_object
 
-# Remaining classes stay the same (OVOMaterial, OVOLight, OVOScene)
-# ...
+    @staticmethod
+    def _skip_physics_data(file_obj):
+        """
+        Funzione d'appoggio per saltare i dati di fisica.
+        NON è un parse rigoroso: esegue un 'seek' veloce.
+        """
+        # Legge un blocco standard di 48 byte (PhysProps), poi
+        # vede se c'è 1 o più hull e li salta.
+        # Per semplicità qui facciamo finta che chunk_data non contenga hull complessi.
+        # In un parser completo bisognerebbe leggere i 'nrOfHulls' e saltare i dati relativi.
+        start_pos = file_obj.tell()
+
+        # Legge i 48 byte
+        file_obj.seek(48, 1)
+
+        # Recupera il numero di hull
+        # NB: offset nel nostro ipotetico struct
+        file_obj.seek(-8, 1)  # torniamo indietro per leggere 'nrOfHulls'
+        nr_hulls = struct.unpack('I', file_obj.read(4))[0]
+        file_obj.seek(4, 1)  # skip un eventuale pad
+
+        # Ora saltiamo i hull se >0
+        for _ in range(nr_hulls):
+            # es. 8 byte per numVert e numFace,
+            # 12 per centroid, poi vertici e facce
+            nr_vertices = struct.unpack('I', file_obj.read(4))[0]
+            nr_faces = struct.unpack('I', file_obj.read(4))[0]
+            file_obj.seek(12, 1)  # centroid
+            # salta i vertici
+            file_obj.seek(nr_vertices * 12, 1)  # 3 float = 12 byte
+            # salta le facce
+            file_obj.seek(nr_faces * 12, 1)  # 3 int = 12 byte
+
+        end_pos = file_obj.tell()
+        return end_pos - start_pos
+
 
 # ====================================
 #  OVOMaterial (Material) Class
 # ====================================
 class OVOMaterial:
-    """Represents a material from the OVO file."""
+    """Rappresenta un materiale OVO."""
 
     def __init__(self, name, base_color, roughness, metallic, transparency, emissive, textures):
         self.name = name
@@ -466,26 +454,27 @@ class OVOMaterial:
         roughness = struct.unpack("<f", file.read(4))[0]
         metallic = struct.unpack("<f", file.read(4))[0]
         transparency = struct.unpack("<f", file.read(4))[0]
+
         textures = {}
         texture_types = ["albedo", "normal", "height", "roughness", "metalness"]
         for texture_type in texture_types:
             texture_name = OVOScene._read_string(file)
             textures[texture_type] = texture_name if texture_name != "[none]" else None
-        print(f"[Material] Parsed: {name}")
-        return OVOMaterial(name, base_color, roughness, metallic, transparency, emissive, textures)
+
+        mat = OVOMaterial(name, base_color, roughness, metallic, transparency, emissive, textures)
+        return mat
 
     def create_blender_material(self, texture_directory):
         mat = bpy.data.materials.new(name=self.name)
         mat.use_nodes = True
-        # Find the Principled BSDF node.
         bsdf = None
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
                 bsdf = node
                 break
         if bsdf is None:
-            print(f"Error: Principled BSDF node not found in material {self.name}")
             return mat
+
         bsdf.inputs["Base Color"].default_value = (*self.base_color, 1.0)
         bsdf.inputs["Roughness"].default_value = self.roughness
         bsdf.inputs["Metallic"].default_value = self.metallic
@@ -495,53 +484,31 @@ class OVOMaterial:
             bsdf.inputs["Alpha"].default_value = self.transparency
         if "Emission" in bsdf.inputs:
             bsdf.inputs["Emission"].default_value = (*self.emissive, 1.0)
-        else:
-            print(f"Warning: 'Emission' input not found in material {self.name}.")
-        print(f"[Material] Created Blender material for: {self.name}")
         self.blender_material = mat
         return mat
-
-    def apply_to_mesh(self, mesh_obj):
-        if not self.blender_material:
-            print(f"Warning: {self.name} has no Blender material.")
-            return
-        if not mesh_obj.data.materials:
-            mesh_obj.data.materials.append(self.blender_material)
-        else:
-            mesh_obj.data.materials[0] = self.blender_material
 
 
 # ====================================
 #  OVOLight (Light Node) Class
 # ====================================
-class OVOLight(OVONode):
-    """Represents a light node."""
-
-    def __init__(self, name, matrix, light_type, color, radius, direction, cutoff, spot_exponent, shadow, volumetric):
-        super().__init__(name, matrix)
-        self.light_type = light_type
-        self.color = color
-        self.radius = radius
-        self.direction = direction
-        self.cutoff = cutoff
-        self.spot_exponent = spot_exponent
-        self.shadow = shadow
-        self.volumetric = volumetric
+class OVOLight:
+    """
+    Classe d'appoggio per il parsing di un chunk di tipo LIGHT (ID=16).
+    """
 
     @staticmethod
     def parse_light(chunk_data):
         file = io.BytesIO(chunk_data)
-        name = OVOScene._read_string(file)
+        light_name = OVOScene._read_string(file)
+
         matrix_bytes = file.read(64)
-        if len(matrix_bytes) < 64:
-            print("Error: Not enough data for light matrix.")
-            return None
         matrix_values = struct.unpack("<16f", matrix_bytes)
-        raw_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
-        # Lights are top-level so apply conversion.
+        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0,16,4)])
         matrix = OVOScene()._convert_matrix(raw_matrix)
-        num_children = struct.unpack("<I", file.read(4))[0]
-        _ = OVOScene._read_string(file)  # Discard target node string.
+
+        children_count = struct.unpack("<I", file.read(4))[0]
+        _target = OVOScene._read_string(file)  # ignora
+
         light_type = struct.unpack("<B", file.read(1))[0]
         color = struct.unpack("<3f", file.read(12))
         radius = struct.unpack("<f", file.read(4))[0]
@@ -550,35 +517,35 @@ class OVOLight(OVONode):
         spot_exponent = struct.unpack("<f", file.read(4))[0]
         shadow = struct.unpack("<B", file.read(1))[0]
         volumetric = struct.unpack("<B", file.read(1))[0]
-        print(f"[Light] Parsed light '{name}' of type {light_type}")
-        return OVOLight(name, matrix, light_type, color, radius, direction, cutoff, spot_exponent, shadow, volumetric)
 
-    def create_blender_light(self):
-        light_types = {0: 'POINT', 1: 'SUN', 2: 'SPOT'}
-        light_data = bpy.data.lights.new(name=self.name, type=light_types.get(self.light_type, 'POINT'))
-        light_obj = bpy.data.objects.new(self.name, light_data)
-        light_data.color = self.color
-        light_data.energy = self.radius * 10
-        if self.light_type == 2:
-            light_data.spot_size = self.cutoff
-            light_data.spot_blend = self.spot_exponent / 10.0
-        light_data.use_shadow = bool(self.shadow)
-        light_obj.matrix_world = self.matrix
-        light_obj.location = self.matrix.translation
-        bpy.context.collection.objects.link(light_obj)
-        print(f"[Light] Created Light: {self.name} at {light_obj.location}")
-        self.blender_object = light_obj
-        return light_obj
+        # Crea effettivamente la LightData di Blender
+        light_data = None
+        if light_type == 0:  # OMNI
+            light_data = bpy.data.lights.new(name=light_name, type='POINT')
+            light_data.color = color
+            light_data.energy = radius * 10
+            light_data.use_shadow = bool(shadow)
+        elif light_type == 1:  # DIRECTIONAL
+            light_data = bpy.data.lights.new(name=light_name, type='SUN')
+            light_data.color = color
+            light_data.energy = radius * 10
+            light_data.use_shadow = bool(shadow)
+        elif light_type == 2:  # SPOT
+            light_data = bpy.data.lights.new(name=light_name, type='SPOT')
+            light_data.color = color
+            light_data.energy = radius * 10
+            light_data.spot_size = cutoff
+            light_data.spot_blend = spot_exponent / 10.0
+            light_data.use_shadow = bool(shadow)
+
+        return light_name, matrix, children_count, light_data
 
 
 # ====================================
-#  OVOScene (Scene Graph) Class
+#  OVOScene (solo per funzioni statiche)
 # ====================================
 class OVOScene:
-    """Represents the scene graph."""
-
-    def __init__(self):
-        self.root = None
+    """Funzioni di supporto (lettura string e conversione matrix)."""
 
     @staticmethod
     def _read_string(file):
@@ -591,23 +558,18 @@ class OVOScene:
         return b''.join(chars).decode('utf-8', errors='replace')
 
     def _convert_matrix(self, matrix):
-        print(f"[Node] Original OVO Matrix:\n{matrix}")
-        matrix.transpose()  # Convert from row-major to column-major.
+        """
+        Dato che nel formato OVO la matrice è pensata per OpenGL (row-major),
+        la trasponiamo e applichiamo la rotazione di 90° su X per passare a Blender.
+        """
+        matrix.transpose()
         conversion_matrix = mathutils.Matrix([
             [1, 0, 0, 0],
             [0, 0, -1, 0],
             [0, 1, 0, 0],
             [0, 0, 0, 1]
         ])
-        converted_matrix = conversion_matrix @ matrix
-        print(f"[Node] Converted Blender Matrix:\n{converted_matrix}")
-        return converted_matrix
-
-    def print_hierarchy(self):
-        if self.root:
-            self.root.print_hierarchy()
-        else:
-            print("Scene has no root.")
+        return conversion_matrix @ matrix
 
 
 # ====================================
@@ -624,11 +586,6 @@ class OT_ImportOVO(Operator, ImportHelper):
         importer = OVOImporter(self.filepath)
         result = importer.import_scene()
         bpy.context.view_layer.update()
-        print("\n[SCENE HIERARCHY]")
-        if importer.scene and importer.scene.root:
-            importer.scene.root.print_hierarchy()
-        else:
-            print("No scene graph available.")
         return result
 
 
@@ -650,7 +607,8 @@ def unregister():
         bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
         print("Successfully unregistered OVO Importer.")
     except Exception as e:
-        print(f"⚠Warning: Failed to unregister properly - {e}")
+        print(f"⚠ Warning: Failed to unregister properly - {e}")
+
 
 if __name__ == "__main__":
    register()
