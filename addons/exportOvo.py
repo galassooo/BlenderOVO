@@ -27,7 +27,7 @@ from bpy.props import StringProperty
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator, Panel
 import subprocess
-
+from PIL import Image
 
 #enum per i tipi TODO da cambiare con solo quelli usati dal reader
 class ChunkType:
@@ -193,9 +193,8 @@ class OVO_Exporter:
         file.write(chunk_data)
 
     @staticmethod
-    def compress_texture_to_dds(input_path, output_path=None, format="dxt1"):
-        print("Formato selezionato (compress fun) :", format)
-        """Comprime una texture nel formato DDS usando il compressore esterno."""
+    def compress_texture_to_dds(input_path, output_path=None, isLegacy=True, isAlbedo=False):
+        """Comprime una texture nel formato DDS usando il compressore esterno, con gestione legacy/non-legacy."""
         if output_path is None:
             output_path = os.path.splitext(input_path)[0] + ".dds"
 
@@ -211,8 +210,37 @@ class OVO_Exporter:
         # Su macOS, rendi l'eseguibile eseguibile
         os.chmod(compressor_path, 0o755)
 
+        # Determina il formato in base al numero di canali e al flag isLegacy
+        if(isAlbedo):
+            try:
+                with Image.open(input_path) as img:
+                    arr = np.array(img)
+                    #sia con pillow che con array l'immagine ha sempre alfa per colpa di blender
+
+                    def has_alpha_channel_pil(arr):
+                        """Verifica se l'immagine ha un canale alpha significativo basandosi sull'array NumPy."""
+                        if arr.shape[-1] == 4:  # Se c'è un canale alpha
+                            alpha_channel = arr[..., 3]  # Prende il canale alpha
+                            return not np.all(
+                                alpha_channel == 255)  # Se tutti i valori sono 255, l'alpha è completamente opaco
+                        return False  # Se non ci sono 4 canali, non c'è alpha
+
+                    if isLegacy:
+                        format = "dxt5" if has_alpha_channel_pil(arr) else "dxt1"
+                    else:
+                        format = "bc7" if has_alpha_channel_pil(arr) else "dxt1"
+
+            except Exception as e:
+                print(f"Errore nell'analisi dell'immagine: {str(e)}")
+                return False, None
+        else:
+            format = "bc5"
+
+        print(f"Formato selezionato: {format}")
+        print(f"Albedo?: {isAlbedo}")
+
+        # Esegui il compressore
         try:
-            # Esegui il compressore
             cmd = [compressor_path, input_path, output_path, format.lower()]
             result = subprocess.run(
                 cmd,
@@ -252,7 +280,7 @@ class OVO_Exporter:
 
         # Funzione ricorsiva per risalire la catena dei nodi fino al nodo image texture,
         # gestendo anche eventuali nodi intermedi (es. Bright/Contrast)
-        def trace_to_image_node(input_item):
+        def trace_to_image_node(input_item, isAlbedo=False):
             # Se l'elemento non possiede l'attributo is_linked, potrebbe essere un nodo;
             # in questo caso, prendi il socket "Color" se presente.
             if not hasattr(input_item, "is_linked"):
@@ -284,7 +312,7 @@ class OVO_Exporter:
                             image.save_render(output_path)
                             # Ora comprimi la texture in DDS
                             dds_output = os.path.splitext(output_path)[0] + ".dds"
-                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, format=self.compression_format)
+                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, isLegacy=True, isAlbedo=isAlbedo)
                             if success:
                                 os.remove(output_path)
                                 # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
@@ -305,7 +333,7 @@ class OVO_Exporter:
                             try:
                                 dds_output = os.path.splitext(output_path)[0] + ".dds"
                                 print("Formato selezionato (prima compress) :", self.compression_format)
-                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, format=self.compression_format)
+                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, isLegacy=True,  isAlbedo=isAlbedo)
                                 if success:
                                     # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
                                     texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
@@ -323,11 +351,11 @@ class OVO_Exporter:
             if hasattr(from_node, 'inputs'):
                 color_input = from_node.inputs.get('Color')
                 if color_input and color_input.is_linked:
-                    return trace_to_image_node(color_input)
+                    return trace_to_image_node(color_input, isAlbedo=isAlbedo)
                 # Se non c'è "Color", prova tutti gli input collegati
                 for inp in from_node.inputs:
                     if inp.is_linked:
-                        result = trace_to_image_node(inp)
+                        result = trace_to_image_node(inp, isAlbedo=isAlbedo)
                         if result != "[none]":
                             return result
 
@@ -349,7 +377,7 @@ class OVO_Exporter:
                 base_color_input = principled.inputs.get('Base Color')
                 if base_color_input:
                     if base_color_input.is_linked:
-                        albedo_texture = trace_to_image_node(base_color_input)
+                        albedo_texture = trace_to_image_node(base_color_input, isAlbedo=True)
                     else:
                         base_color = base_color_input.default_value
                         base_color_rgb = base_color[:3] if len(base_color) > 2 else (0.8, 0.8, 0.8)
@@ -519,7 +547,76 @@ class OVO_Exporter:
         chunk_data += self.pack_vector3(max_box)
 
         # Write physics flag (0 = no physics)
-        chunk_data += struct.pack('B', 0)
+        has_physics = False
+        physics_type = 0
+
+        # Verifica se l'oggetto ha proprietà di fisica in Blender
+        if obj.rigid_body is not None:
+            has_physics = True
+            if obj.rigid_body.type == 'ACTIVE':
+                physics_type = 1  # Dynamic
+            elif obj.rigid_body.type == 'PASSIVE':
+                physics_type = 0  # Static
+
+        # Scrivi il flag physics
+        chunk_data += struct.pack('B', 1 if has_physics else 0)
+
+        # Se ha proprietà fisiche, aggiungi tutti i dati necessari
+        if has_physics:
+            # Impostazioni di base - usa valori di default se l'attributo non esiste
+            # Blender 4.x potrebbe avere nomi diversi per queste proprietà
+
+            # Collision continua - usa un valore di default
+            cont_collision = 1  # Default attivo
+
+            # Collision con altri corpi rigidi
+            collide_with_rbodies = 1 if obj.rigid_body.enabled else 0
+
+            # Tipo di collision shape
+            hull_type = 0  # Default box
+            if hasattr(obj.rigid_body, 'collision_shape'):
+                if obj.rigid_body.collision_shape == 'MESH':
+                    hull_type = 1
+                elif obj.rigid_body.collision_shape == 'CONVEX_HULL':
+                    hull_type = 2
+
+            # Pacchetta i byte di controllo
+            chunk_data += struct.pack('B', physics_type)
+            chunk_data += struct.pack('B', cont_collision)
+            chunk_data += struct.pack('B', collide_with_rbodies)
+            chunk_data += struct.pack('B', hull_type)
+
+            # Centro di massa (usa l'origine dell'oggetto o il centro della mesh)
+            # Calcola il centro della mesh
+            local_bbox_center = sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector()) / 8
+            mass_center = local_bbox_center
+
+            chunk_data += self.pack_vector3(mass_center)
+
+            # Proprietà fisiche - usa getter sicuri per evitare AttributeError
+            mass = getattr(obj.rigid_body, 'mass', 1.0)
+            static_friction = getattr(obj.rigid_body, 'friction', 0.5)
+            dynamic_friction = static_friction  # Usa lo stesso valore
+            bounciness = getattr(obj.rigid_body, 'restitution', 0.0)
+            linear_damping = getattr(obj.rigid_body, 'linear_damping', 0.04)
+            angular_damping = getattr(obj.rigid_body, 'angular_damping', 0.1)
+
+            # Scrivi i valori
+            chunk_data += struct.pack('f', mass)
+            chunk_data += struct.pack('f', static_friction)
+            chunk_data += struct.pack('f', dynamic_friction)
+            chunk_data += struct.pack('f', bounciness)
+            chunk_data += struct.pack('f', linear_damping)
+            chunk_data += struct.pack('f', angular_damping)
+
+            # Per ora non esportiamo hull personalizzati
+            nr_of_hulls = 0
+            chunk_data += struct.pack('I', nr_of_hulls)
+            chunk_data += struct.pack('I', 0)  # Padding
+
+            # Puntatori (nel file vengono impostati a zero)
+            chunk_data += struct.pack('Q', 0)  # physObj pointer
+            chunk_data += struct.pack('Q', 0)  # hull pointer
 
         # Write LODs (1 = single LOD)
         chunk_data += struct.pack('I', 1)
