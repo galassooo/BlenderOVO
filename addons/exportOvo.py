@@ -59,12 +59,12 @@ class ChunkType:
     LAST = 25
 
 class OVO_Exporter:
-    def __init__(self, context, filepath, use_mesh=True, use_light=True, compression_format="DXT1"):
+    def __init__(self, context, filepath, use_mesh=True, use_light=True, use_legacy_compression=True):
         self.context = context
         self.filepath = filepath
         self.use_mesh = use_mesh
         self.use_light = use_light
-        self.compression_format = compression_format  # Salviamo il formato
+        self.use_legacy_compression = use_legacy_compression
         self.processed_objects = set()
         self.basePath = ""
 
@@ -194,7 +194,9 @@ class OVO_Exporter:
 
     @staticmethod
     def compress_texture_to_dds(input_path, output_path=None, isLegacy=True, isAlbedo=False):
-        """Comprime una texture nel formato DDS usando il compressore esterno, con gestione legacy/non-legacy."""
+        """Comprime una texture nel formato DDS usando il compressore esterno.
+           isLegacy: se True, usa la compressione S3TC (DXT1/DXT5), altrimenti usa BPTC (BC7)
+           isAlbedo: se True, è una texture con canale alpha, altrimenti è una normal map o altro"""
         if output_path is None:
             output_path = os.path.splitext(input_path)[0] + ".dds"
 
@@ -210,34 +212,35 @@ class OVO_Exporter:
         # Su macOS, rendi l'eseguibile eseguibile
         os.chmod(compressor_path, 0o755)
 
-        # Determina il formato in base al numero di canali e al flag isLegacy
-        if(isAlbedo):
+        # Determina il formato in base al flag isLegacy e al tipo di texture
+        if isAlbedo:
             try:
                 with Image.open(input_path) as img:
                     arr = np.array(img)
-                    #sia con pillow che con array l'immagine ha sempre alfa per colpa di blender
 
                     def has_alpha_channel_pil(arr):
-                        """Verifica se l'immagine ha un canale alpha significativo basandosi sull'array NumPy."""
+                        """Verifica se l'immagine ha un canale alpha significativo."""
                         if arr.shape[-1] == 4:  # Se c'è un canale alpha
-                            alpha_channel = arr[..., 3]  # Prende il canale alpha
-                            return not np.all(
-                                alpha_channel == 255)  # Se tutti i valori sono 255, l'alpha è completamente opaco
-                        return False  # Se non ci sono 4 canali, non c'è alpha
+                            alpha_channel = arr[..., 3]
+                            return not np.all(alpha_channel == 255)
+                        return False
 
+                    # Scegli il formato in base al tipo di compressione e presenza di alpha
                     if isLegacy:
                         format = "dxt5" if has_alpha_channel_pil(arr) else "dxt1"
                     else:
-                        format = "bc7" if has_alpha_channel_pil(arr) else "dxt1"
+                        format = "bc7"  # BC7 gestisce sia con alpha che senza
 
             except Exception as e:
                 print(f"Errore nell'analisi dell'immagine: {str(e)}")
                 return False, None
         else:
-            format = "bc5"
+            # Per normal maps o altre texture speciali
+            format = "bc5"  # BC5 per normal maps
 
         print(f"Formato selezionato: {format}")
         print(f"Albedo?: {isAlbedo}")
+        print(f"Usando compressione legacy (S3TC)?: {isLegacy}")
 
         # Esegui il compressore
         try:
@@ -312,7 +315,7 @@ class OVO_Exporter:
                             image.save_render(output_path)
                             # Ora comprimi la texture in DDS
                             dds_output = os.path.splitext(output_path)[0] + ".dds"
-                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, isLegacy=True, isAlbedo=isAlbedo)
+                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, isLegacy=self.use_legacy_compression, isAlbedo=isAlbedo)
                             if success:
                                 os.remove(output_path)
                                 # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
@@ -333,7 +336,7 @@ class OVO_Exporter:
                             try:
                                 dds_output = os.path.splitext(output_path)[0] + ".dds"
                                 print("Formato selezionato (prima compress) :", self.compression_format)
-                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, isLegacy=True,  isAlbedo=isAlbedo)
+                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, isLegacy=self.use_legacy_compression,  isAlbedo=isAlbedo)
                                 if success:
                                     # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
                                     texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
@@ -845,15 +848,11 @@ class OVO_PT_export_main(Operator, ExportHelper):
         default=True,
     )
 
-    compression_format: EnumProperty(
-        name="Compressione Texture",
-        description="Seleziona il formato di compressione per le texture",
-        items=[
-            ('DXT1', "DXT1", "Compressione DXT1"),
-            ('BC7', "BC7", "Compressione BC7"),
-            ('BCH6', "BCH6", "Compressione BCH6"),
-        ],
-        default='DXT1'
+    # Modified compression format to be a simple toggle
+    use_legacy_compression: BoolProperty(
+        name="Use S3TC Compression",
+        description="Use legacy S3TC compression (DXT1/DXT5) instead of higher quality BPTC compression (BC7)",
+        default=True,
     )
 
     def draw(self, context):
@@ -865,7 +864,7 @@ class OVO_PT_export_main(Operator, ExportHelper):
         row = box.row()
         row.prop(self, "use_mesh")
         row.prop(self, "use_light")
-        layout.prop(self, "compression_format")
+        layout.prop(self, "use_legacy_compression")
 
     def execute(self, context):
         try:
@@ -873,9 +872,8 @@ class OVO_PT_export_main(Operator, ExportHelper):
             print(f"Export settings:")
             print(f"- Use mesh: {self.use_mesh}")
             print(f"- Use light: {self.use_light}")
+            print(f"- Use S3TC: {self.use_legacy_compression}")
             print(f"- Output path: {self.filepath}")
-
-            print("Formato selezionato (execute) :", self.compression_format)
 
             # Crea l'esportatore
             exporter = OVO_Exporter(
@@ -883,7 +881,7 @@ class OVO_PT_export_main(Operator, ExportHelper):
                 self.filepath,
                 use_mesh=self.use_mesh,
                 use_light=self.use_light,
-                compression_format=self.compression_format
+                use_legacy_compression=self.use_legacy_compression  # Passing boolean instead of format string
             )
 
             # Esegui l'export
@@ -953,7 +951,8 @@ if __name__ == "__main__":
         bpy.ops.export_scene.ovo(
             filepath=output_path,
             use_mesh=True,          # Includi le mesh
-            use_light=True          # Includi le luci
+            use_light=True,         # Includi le luci
+            use_legacy_compression=False  # Usa compressione S3TC
         )
         print(f"Export completato con successo! File salvato in: {output_path}")
 
