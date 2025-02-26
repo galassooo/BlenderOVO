@@ -192,25 +192,46 @@ class OVO_Exporter:
         self.write_chunk_header(file, ChunkType.OBJECT, len(chunk_data))
         file.write(chunk_data)
 
+    def copy_texture_without_compression(self, input_path, output_name=None):
+        """Copia la texture senza compressione quando la compressione non è disponibile.
+        Restituisce il nome del file copiato."""
+        import os
+        import shutil
+        from pathlib import Path
+
+        # Se non è specificato un nome di output, usa il nome del file originale
+        if output_name is None:
+            output_name = os.path.basename(input_path)
+
+        # Destinazione nella stessa cartella dell'esportazione OVO
+        output_dir = os.path.dirname(self.filepath)
+        output_path = os.path.join(output_dir, output_name)
+
+        try:
+            # Copia la texture
+            shutil.copy2(input_path, output_path)
+            print(f"Texture copiata senza compressione: {output_path}")
+            return output_name
+        except Exception as e:
+            print(f"Errore durante la copia della texture: {str(e)}")
+            return "[none]"
     @staticmethod
     def compress_texture_to_dds(input_path, output_path=None, isLegacy=True, isAlbedo=False):
-        """Comprime una texture nel formato DDS usando il compressore esterno.
+        """Comprime una texture nel formato DDS usando il compressore appropriato per la piattaforma.
            isLegacy: se True, usa la compressione S3TC (DXT1/DXT5), altrimenti usa BPTC (BC7)
            isAlbedo: se True, è una texture con canale alpha, altrimenti è una normal map o altro"""
+
+        import platform
+        import os
+        import subprocess
+        from PIL import Image
+        import numpy as np
+
         if output_path is None:
             output_path = os.path.splitext(input_path)[0] + ".dds"
 
-        # Ottieni il percorso dell'eseguibile
-        addon_dir = os.path.dirname(os.path.abspath(__file__))
-        compressor_path = os.path.join(addon_dir, "bin", "dds_compress")
-
-        # Verifica che l'eseguibile esista
-        if not os.path.exists(compressor_path):
-            print(f"Errore: l'eseguibile non esiste in {compressor_path}")
-            return False, None
-
-        # Su macOS, rendi l'eseguibile eseguibile
-        os.chmod(compressor_path, 0o755)
+        # Determina il sistema operativo
+        system = platform.system()
 
         # Determina il formato in base al flag isLegacy e al tipo di texture
         if isAlbedo:
@@ -242,24 +263,141 @@ class OVO_Exporter:
         print(f"Albedo?: {isAlbedo}")
         print(f"Usando compressione legacy (S3TC)?: {isLegacy}")
 
-        # Esegui il compressore
-        try:
-            cmd = [compressor_path, input_path, output_path, format.lower()]
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+        # Ottieni il percorso dell'eseguibile appropriato per la piattaforma
+        addon_dir = os.path.dirname(os.path.abspath(__file__))
 
-            if result.returncode == 0:
-                print(f"Compressione riuscita: {output_path}")
-                return True, output_path
-            else:
-                print(f"Errore di compressione: {result.stderr}")
+        # Compressione su macOS usando il compressore locale
+        if system == "Darwin":  # macOS
+            compressor_path = os.path.join(addon_dir, "bin", "dds_compress")
+
+            # Verifica che l'eseguibile esista
+            if not os.path.exists(compressor_path):
+                print(f"Errore: l'eseguibile non esiste in {compressor_path}")
                 return False, None
-        except Exception as e:
-            print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+
+            # Su macOS, rendi l'eseguibile eseguibile
+            os.chmod(compressor_path, 0o755)
+
+            # Esegui il compressore
+            try:
+                cmd = [compressor_path, input_path, output_path, format.lower()]
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+                return False, None
+
+        # Compressione su Windows usando Compressonator CLI
+        elif system == "Windows":
+            compressor_path = os.path.join(addon_dir, "bin", "CompressonatorCLI.exe")
+
+            # Verifica che l'eseguibile esista
+            if not os.path.exists(compressor_path):
+                print(f"Errore: Compressonator CLI non trovato in {compressor_path}")
+                print("Scarica Compressonator da https://github.com/GPUOpen-Tools/Compressonator/releases")
+                print("e posiziona CompressonatorCLI.exe nella cartella bin dell'addon")
+                return False, None
+
+            # Mappa formati al formato compressonator
+            format_map = {
+                "dxt1": "BC1",
+                "dxt5": "BC3",
+                "bc5": "BC5",
+                "bc7": "BC7"
+            }
+
+            comp_format = format_map.get(format.lower(), "BC7")
+
+            # Costruisci il comando per Compressonator
+            cmd = [
+                compressor_path,
+                "-fd", comp_format,
+                input_path,
+                output_path
+            ]
+
+            print(f"Esecuzione comando Compressonator: {' '.join(cmd)}")
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione Compressonator: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione di Compressonator: {str(e)}")
+                return False, None
+
+        # Supporto per Linux
+        elif system == "Linux":
+            compressor_path = os.path.join(addon_dir, "bin", "dds_compress_linux")
+
+            if not os.path.exists(compressor_path):
+                print(f"Errore: compressore non trovato per Linux in {compressor_path}")
+                return False, None
+
+            # Per Linux, rendi l'eseguibile eseguibile
+            os.chmod(compressor_path, 0o755)
+
+            # Mappa formati al formato compressonator per Linux
+            format_map = {
+                "dxt1": "BC1",
+                "dxt5": "BC3",
+                "bc5": "BC5",
+                "bc7": "BC7"
+            }
+
+            comp_format = format_map.get(format.lower(), "BC7")
+
+            # Comando per Compressonator Linux
+            cmd = [
+                compressor_path,
+                "-fd", comp_format,
+                input_path,
+                output_path
+            ]
+
+            print(f"Esecuzione comando Linux: {' '.join(cmd)}")
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+                return False, None
+
+        else:
+            print(f"Sistema operativo non supportato: {system}")
             return False, None
 
     def write_material_chunk(self, file, material):
@@ -315,19 +453,25 @@ class OVO_Exporter:
                             image.save_render(output_path)
                             # Ora comprimi la texture in DDS
                             dds_output = os.path.splitext(output_path)[0] + ".dds"
-                            success, dds_path = self.compress_texture_to_dds(output_path, dds_output, isLegacy=self.use_legacy_compression, isAlbedo=isAlbedo)
+                            success, dds_path = self.compress_texture_to_dds(
+                                output_path,
+                                dds_output,
+                                isLegacy=self.use_legacy_compression,
+                                isAlbedo=isAlbedo
+                            )
                             if success:
-                                os.remove(output_path)
-                                # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
+                                os.remove(output_path)  # Rimuovi il file originale dopo la compressione
                                 texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
                                 return texture_name_dds
                             else:
-                                print("Compressione DDS fallita")
-                                return "[none]"
+                                # Fallback: usa la texture non compressa
+                                print("Compressione fallita, utilizzo texture non compressa")
+                                return self.copy_texture_without_compression(output_path)
                         except Exception as e:
                             print(f"Failed to export texture {texture_filename}: {e}")
                             return "[none]"
-                    # Se l'immagine ha un filepath valido, copia il file e comprimi
+
+                    # Per il caso delle immagini con filepath:
                     elif image.filepath:
                         source_path = bpy.path.abspath(image.filepath)
                         if os.path.exists(source_path):
@@ -335,19 +479,25 @@ class OVO_Exporter:
                             output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
                             try:
                                 dds_output = os.path.splitext(output_path)[0] + ".dds"
-                                print("Formato selezionato (prima compress) :", self.compression_format)
-                                success, dds_path = self.compress_texture_to_dds(source_path, dds_output, isLegacy=self.use_legacy_compression,  isAlbedo=isAlbedo)
+                                print(f"Usando compressione legacy: {self.use_legacy_compression}")
+                                success, dds_path = self.compress_texture_to_dds(
+                                    source_path,
+                                    dds_output,
+                                    isLegacy=self.use_legacy_compression,
+                                    isAlbedo=isAlbedo
+                                )
                                 if success:
                                     # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
                                     texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
                                     return texture_name_dds
                                 else:
-                                    print("Compressione DDS fallita")
-                                    return "[none]"
+                                    # Fallback: usa la texture non compressa
+                                    print("Compressione fallita, utilizzo texture non compressa")
+                                    return self.copy_texture_without_compression(source_path)
                             except Exception as e:
-                                print(f"Failed to copy texture: {e}")
-                                return "[none]"
-                    return image.name
+                                print(f"Failed to compress texture: {e}")
+                                # Fallback: usa la texture non compressa
+                                return self.copy_texture_without_compression(source_path)
                 return "[none]"
 
             # Se il nodo non è un Image Texture, prova a risalire tramite il socket "Color"
