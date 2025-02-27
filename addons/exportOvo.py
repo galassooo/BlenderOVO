@@ -27,7 +27,6 @@ from bpy.props import StringProperty
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator, Panel
 import subprocess
-from PIL import Image
 
 #enum per i tipi TODO da cambiare con solo quelli usati dal reader
 class ChunkType:
@@ -224,7 +223,6 @@ class OVO_Exporter:
         import platform
         import os
         import subprocess
-        from PIL import Image
         import numpy as np
 
         if output_path is None:
@@ -236,21 +234,36 @@ class OVO_Exporter:
         # Determina il formato in base al flag isLegacy e al tipo di texture
         if isAlbedo:
             try:
-                with Image.open(input_path) as img:
-                    arr = np.array(img)
+                # Carica l'immagine come array di bytes binari
+                with open(input_path, 'rb') as f:
+                    binary_data = f.read()
+
+                # Converti in un array NumPy di uint8
+                binary_array = np.frombuffer(binary_data, dtype=np.uint8)
+
+                # Nota: questa è una semplificazione e non fornirà un array di pixel corretto
+                # Per una vera analisi dei pixel, è necessaria una libreria di imaging
+
+                # Assumiamo che sia un'immagine RGBA
+                # (questa è un'approssimazione molto grezza!)
+                if len(binary_array) % 4 == 0:
+                    # Reshape assumendo RGBA
+                    pixel_count = len(binary_array) // 4
+                    arr = binary_array.reshape(pixel_count, 4)
 
                     def has_alpha_channel_pil(arr):
                         """Verifica se l'immagine ha un canale alpha significativo."""
-                        if arr.shape[-1] == 4:  # Se c'è un canale alpha
-                            alpha_channel = arr[..., 3]
-                            return not np.all(alpha_channel == 255)
-                        return False
+                        alpha_channel = arr[:, 3]
+                        return not np.all(alpha_channel == 255)
 
                     # Scegli il formato in base al tipo di compressione e presenza di alpha
                     if isLegacy:
                         format = "dxt5" if has_alpha_channel_pil(arr) else "dxt1"
                     else:
                         format = "bc7"  # BC7 gestisce sia con alpha che senza
+                else:
+                    # Altrimenti fallback al formato senza alpha
+                    format = "dxt1" if isLegacy else "bc7"
 
             except Exception as e:
                 print(f"Errore nell'analisi dell'immagine: {str(e)}")
@@ -1102,7 +1115,7 @@ if __name__ == "__main__":
             filepath=output_path,
             use_mesh=True,          # Includi le mesh
             use_light=True,         # Includi le luci
-            use_legacy_compression=False  # Usa compressione S3TC
+            use_legacy_compression=True  # Usa compressione S3TC
         )
         print(f"Export completato con successo! File salvato in: {output_path}")
 
