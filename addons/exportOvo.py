@@ -1,4 +1,6 @@
 # cose per blender
+from itertools import compress
+
 import numpy as np
 
 bl_info = {
@@ -16,10 +18,15 @@ import bpy
 import struct
 import mathutils
 import math
+import shutil
+from pathlib import Path
 import numpy
+import os
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty
-from bpy.types import Operator
+from bpy.props import StringProperty, BoolProperty, EnumProperty
+from bpy.types import Operator, Panel
+import subprocess
 
 #enum per i tipi TODO da cambiare con solo quelli usati dal reader
 class ChunkType:
@@ -51,11 +58,79 @@ class ChunkType:
     LAST = 25
 
 class OVO_Exporter:
-    def __init__(self, context, filepath):
+    def __init__(self, context, filepath, use_mesh=True, use_light=True, use_legacy_compression=True):
         self.context = context
         self.filepath = filepath
+        self.use_mesh = use_mesh
+        self.use_light = use_light
+        self.use_legacy_compression = use_legacy_compression
         self.processed_objects = set()
-        
+        self.basePath = ""
+
+    def should_export_object(self, obj):
+        """
+        Determina se un oggetto dovrebbe essere esportato in base alle opzioni.
+        """
+        if not obj:
+            return False
+
+        # Controlla il tipo di oggetto
+        if obj.type == 'MESH' and not self.use_mesh:
+            return False
+        if obj.type == 'LIGHT' and not self.use_light:
+            return False
+
+        return True
+
+    def write_node_recursive(self, file, obj):
+        """
+        Scrive ricorsivamente un nodo e tutti i suoi figli nel file OVO.
+        """
+        if obj in self.processed_objects:
+            return
+
+        self.processed_objects.add(obj)
+
+        # Conta solo i figli che verranno effettivamente esportati
+        valid_children = []
+        for child in obj.children:
+            if child not in self.processed_objects:
+                # Aggiungi il figlio solo se dovrebbe essere esportato
+                if ((child.type == 'MESH' and self.use_mesh) or
+                        (child.type == 'LIGHT' and self.use_light) or
+                        (child.type not in {'MESH', 'LIGHT'})):
+                    valid_children.append(child)
+
+        num_children = len(valid_children)
+
+        print(f"\nProcessing: {obj.name}")
+        print(f"Type: {obj.type}")
+        print(f"Number of children: {num_children}")
+        print(f"Should export: {self.should_export_object(obj)}")
+
+        # Processa i materiali per le mesh
+        if obj.type == 'MESH' and self.should_export_object(obj):
+            for material_slot in obj.material_slots:
+                material = material_slot.material
+                if material and material not in self.processed_objects:
+                    self.write_material_chunk(file, material)
+                    self.processed_objects.add(material)
+
+        # Scrivi il nodo solo se dovrebbe essere esportato
+        if ((obj.type == 'MESH' and self.use_mesh) or
+                (obj.type == 'LIGHT' and self.use_light) or
+                (obj.type not in {'MESH', 'LIGHT'})):
+            if obj.type == 'MESH':
+                self.write_mesh_chunk(file, obj, num_children)
+            elif obj.type == 'LIGHT':
+                self.write_light_chunk(file, obj, num_children)
+            else:
+                self.write_node_chunk(file, obj, num_children)
+
+        # Processa ricorsivamente i figli validi
+        for child in valid_children:
+            self.write_node_recursive(file, child)
+
     def pack_string(self, string):
         #encode strings in byte and add end char
         return string.encode('utf-8') + b'\0'
@@ -115,182 +190,404 @@ class OVO_Exporter:
         chunk_data = struct.pack('I', 8)
         self.write_chunk_header(file, ChunkType.OBJECT, len(chunk_data))
         file.write(chunk_data)
-    
-    
-    def write_material_chunk(self, file, material):
-        chunk_data = b'' #byte chunk al posto di una stringa 
-        #(altrimenty python con il + tra literal crea una stringa e NON una sequenza di byte)
 
-        # Material name
+    def copy_texture_without_compression(self, input_path, output_name=None):
+        """Copia la texture senza compressione quando la compressione non è disponibile.
+        Restituisce il nome del file copiato."""
+        import os
+        import shutil
+        from pathlib import Path
+
+        # Se non è specificato un nome di output, usa il nome del file originale
+        if output_name is None:
+            output_name = os.path.basename(input_path)
+
+        # Destinazione nella stessa cartella dell'esportazione OVO
+        output_dir = os.path.dirname(self.filepath)
+        output_path = os.path.join(output_dir, output_name)
+
+        try:
+            # Copia la texture
+            shutil.copy2(input_path, output_path)
+            print(f"Texture copiata senza compressione: {output_path}")
+            return output_name
+        except Exception as e:
+            print(f"Errore durante la copia della texture: {str(e)}")
+            return "[none]"
+    @staticmethod
+    def compress_texture_to_dds(input_path, output_path=None, isLegacy=True, isAlbedo=False):
+        """Comprime una texture nel formato DDS usando il compressore appropriato per la piattaforma.
+           isLegacy: se True, usa la compressione S3TC (DXT1/DXT5), altrimenti usa BPTC (BC7)
+           isAlbedo: se True, è una texture con canale alpha, altrimenti è una normal map o altro"""
+
+        import platform
+        import os
+        import subprocess
+        import numpy as np
+
+        if output_path is None:
+            output_path = os.path.splitext(input_path)[0] + ".dds"
+
+        # Determina il sistema operativo
+        system = platform.system()
+
+        # Determina il formato in base al flag isLegacy e al tipo di texture
+        if isAlbedo:
+            try:
+                # Carica l'immagine come array di bytes binari
+                with open(input_path, 'rb') as f:
+                    binary_data = f.read()
+
+                # Converti in un array NumPy di uint8
+                binary_array = np.frombuffer(binary_data, dtype=np.uint8)
+
+                # Nota: questa è una semplificazione e non fornirà un array di pixel corretto
+                # Per una vera analisi dei pixel, è necessaria una libreria di imaging
+
+                # Assumiamo che sia un'immagine RGBA
+                # (questa è un'approssimazione molto grezza!)
+                if len(binary_array) % 4 == 0:
+                    # Reshape assumendo RGBA
+                    pixel_count = len(binary_array) // 4
+                    arr = binary_array.reshape(pixel_count, 4)
+
+                    def has_alpha_channel_pil(arr):
+                        """Verifica se l'immagine ha un canale alpha significativo."""
+                        alpha_channel = arr[:, 3]
+                        return not np.all(alpha_channel == 255)
+
+                    # Scegli il formato in base al tipo di compressione e presenza di alpha
+                    if isLegacy:
+                        format = "dxt5" if has_alpha_channel_pil(arr) else "dxt1"
+                    else:
+                        format = "bc7"  # BC7 gestisce sia con alpha che senza
+                else:
+                    # Altrimenti fallback al formato senza alpha
+                    format = "dxt1" if isLegacy else "bc7"
+
+            except Exception as e:
+                print(f"Errore nell'analisi dell'immagine: {str(e)}")
+                return False, None
+        else:
+            # Per normal maps o altre texture speciali
+            format = "bc5"  # BC5 per normal maps
+
+        print(f"Formato selezionato: {format}")
+        print(f"Albedo?: {isAlbedo}")
+        print(f"Usando compressione legacy (S3TC)?: {isLegacy}")
+
+        # Ottieni il percorso dell'eseguibile appropriato per la piattaforma
+        addon_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Compressione su macOS usando il compressore locale
+        if system == "Darwin":  # macOS
+            compressor_path = os.path.join(addon_dir, "bin", "dds_compress")
+
+            # Verifica che l'eseguibile esista
+            if not os.path.exists(compressor_path):
+                print(f"Errore: l'eseguibile non esiste in {compressor_path}")
+                return False, None
+
+            # Su macOS, rendi l'eseguibile eseguibile
+            os.chmod(compressor_path, 0o755)
+
+            # Esegui il compressore
+            try:
+                cmd = [compressor_path, input_path, output_path, format.lower()]
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+                return False, None
+
+        # Compressione su Windows usando Compressonator CLI
+        elif system == "Windows":
+            compressor_path = os.path.join(addon_dir, "bin", "CompressonatorCLI.exe")
+
+            # Verifica che l'eseguibile esista
+            if not os.path.exists(compressor_path):
+                print(f"Errore: Compressonator CLI non trovato in {compressor_path}")
+                print("Scarica Compressonator da https://github.com/GPUOpen-Tools/Compressonator/releases")
+                print("e posiziona CompressonatorCLI.exe nella cartella bin dell'addon")
+                return False, None
+
+            # Mappa formati al formato compressonator
+            format_map = {
+                "dxt1": "BC1",
+                "dxt5": "BC3",
+                "bc5": "BC5",
+                "bc7": "BC7"
+            }
+
+            comp_format = format_map.get(format.lower(), "BC7")
+
+            # Costruisci il comando per Compressonator
+            cmd = [
+                compressor_path,
+                "-fd", comp_format,
+                input_path,
+                output_path
+            ]
+
+            print(f"Esecuzione comando Compressonator: {' '.join(cmd)}")
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione Compressonator: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione di Compressonator: {str(e)}")
+                return False, None
+
+        # Supporto per Linux
+        elif system == "Linux":
+            compressor_path = os.path.join(addon_dir, "bin", "dds_compress_linux")
+
+            if not os.path.exists(compressor_path):
+                print(f"Errore: compressore non trovato per Linux in {compressor_path}")
+                return False, None
+
+            # Per Linux, rendi l'eseguibile eseguibile
+            os.chmod(compressor_path, 0o755)
+
+            # Mappa formati al formato compressonator per Linux
+            format_map = {
+                "dxt1": "BC1",
+                "dxt5": "BC3",
+                "bc5": "BC5",
+                "bc7": "BC7"
+            }
+
+            comp_format = format_map.get(format.lower(), "BC7")
+
+            # Comando per Compressonator Linux
+            cmd = [
+                compressor_path,
+                "-fd", comp_format,
+                input_path,
+                output_path
+            ]
+
+            print(f"Esecuzione comando Linux: {' '.join(cmd)}")
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    print(f"Compressione riuscita: {output_path}")
+                    return True, output_path
+                else:
+                    print(f"Errore di compressione: {result.stderr}")
+                    return False, None
+            except Exception as e:
+                print(f"Errore durante l'esecuzione del compressore: {str(e)}")
+                return False, None
+
+        else:
+            print(f"Sistema operativo non supportato: {system}")
+            return False, None
+
+    def write_material_chunk(self, file, material):
+        chunk_data = b''  # byte chunk, non stringa
+        # Nome del materiale
         chunk_data += self.pack_string(material.name)
-        
-        # Default values
+
+        # Valori di default
         emission_color = (0, 0, 0)
         base_color_rgb = (0.8, 0.8, 0.8)
         alpha = 1.0
         roughness = 0.5
         metallic = 0.0
-        
-        #default files values
+
+        # Valori di default per i file texture
         albedo_texture = "[none]"
         normal_texture = "[none]"
         roughness_texture = "[none]"
         metallic_texture = "[none]"
         height_texture = "[none]"
-        
-        #Traccia da un nodo dello shader (input) al nodo image texture (ShaderNodeTexImage)
-        def trace_to_image_node(input_socket):
-            """Trace back through node connections to find an image node"""
-            #se non ho un nodo (quindi uso canali normali)
-            if not input_socket or not input_socket.is_linked:
+
+        # Funzione ricorsiva per risalire la catena dei nodi fino al nodo image texture,
+        # gestendo anche eventuali nodi intermedi (es. Bright/Contrast)
+        def trace_to_image_node(input_item, isAlbedo=False):
+            # Se l'elemento non possiede l'attributo is_linked, potrebbe essere un nodo;
+            # in questo caso, prendi il socket "Color" se presente.
+            if not hasattr(input_item, "is_linked"):
+                input_item = input_item.inputs.get("Color")
+                if not input_item:
+                    return "[none]"
+
+            # Se il socket non è collegato, esci
+            if not input_item or not input_item.is_linked:
                 return "[none]"
-                
-            # recupero il nodo
-            from_node = input_socket.links[0].from_node
-            
-            # Debug info
-            print(f"Tracing from input: {input_socket.name}")
+
+            # Ottieni il socket di origine e il relativo nodo
+            from_socket = input_item.links[0].from_socket
+            from_node = from_socket.node
+            print(f"Tracing from input: {input_item.name}")
             print(f"Connected node type: {type(from_node).__name__}")
-            
-            # Check per ShaderNodeTexImage
+
+            # Caso base: se il nodo è un Image Texture, salviamo la texture
             if isinstance(from_node, bpy.types.ShaderNodeTexImage):
                 print("Found Image Texture node directly")
                 if from_node.image:
-                    print(f"Image name: {from_node.image.name}")
-                    return from_node.image.name
+                    image = from_node.image
+                    print(f"Image name: {image.name}")
+                    # Se l'immagine è impacchettata, salvala nella cartella di output
+                    if image.packed_file:
+                        texture_filename = image.name
+                        output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
+                        try:
+                            image.save_render(output_path)
+                            # Ora comprimi la texture in DDS
+                            dds_output = os.path.splitext(output_path)[0] + ".dds"
+                            success, dds_path = self.compress_texture_to_dds(
+                                output_path,
+                                dds_output,
+                                isLegacy=self.use_legacy_compression,
+                                isAlbedo=isAlbedo
+                            )
+                            if success:
+                                os.remove(output_path)  # Rimuovi il file originale dopo la compressione
+                                texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
+                                return texture_name_dds
+                            else:
+                                # Fallback: usa la texture non compressa
+                                print("Compressione fallita, utilizzo texture non compressa")
+                                return self.copy_texture_without_compression(output_path)
+                        except Exception as e:
+                            print(f"Failed to export texture {texture_filename}: {e}")
+                            return "[none]"
+
+                    # Per il caso delle immagini con filepath:
+                    elif image.filepath:
+                        source_path = bpy.path.abspath(image.filepath)
+                        if os.path.exists(source_path):
+                            texture_filename = os.path.basename(source_path)
+                            output_path = os.path.join(os.path.dirname(self.filepath), texture_filename)
+                            try:
+                                dds_output = os.path.splitext(output_path)[0] + ".dds"
+                                print(f"Usando compressione legacy: {self.use_legacy_compression}")
+                                success, dds_path = self.compress_texture_to_dds(
+                                    source_path,
+                                    dds_output,
+                                    isLegacy=self.use_legacy_compression,
+                                    isAlbedo=isAlbedo
+                                )
+                                if success:
+                                    # Hardcode il nome in DDS: anche se dds_path potrebbe già avere l'estensione, ci assicuriamo che sia ".dds"
+                                    texture_name_dds = os.path.splitext(os.path.basename(dds_path))[0] + ".dds"
+                                    return texture_name_dds
+                                else:
+                                    # Fallback: usa la texture non compressa
+                                    print("Compressione fallita, utilizzo texture non compressa")
+                                    return self.copy_texture_without_compression(source_path)
+                            except Exception as e:
+                                print(f"Failed to compress texture: {e}")
+                                # Fallback: usa la texture non compressa
+                                return self.copy_texture_without_compression(source_path)
                 return "[none]"
-                
-            # se non è un nodo immagine, cerca nei suoi input
+
+            # Se il nodo non è un Image Texture, prova a risalire tramite il socket "Color"
             if hasattr(from_node, 'inputs'):
-                # Lista tutti gli input disponibili (DEBUG)
-                print(f"Node inputs: {[input.name for input in from_node.inputs]}")
-                
-                #cerca nell'input Color come prima cosa
                 color_input = from_node.inputs.get('Color')
                 if color_input and color_input.is_linked:
-                    next_node = color_input.links[0].from_node
-                    print(f"Checking Color input, found node type: {type(next_node).__name__}") #DEBUGF
-                    if isinstance(next_node, bpy.types.ShaderNodeTexImage):
-                        if next_node.image:
-                            print(f"Found image in Color input: {next_node.image.name}") #DEBUG
-                            return next_node.image.name
-                        
-                # se non trova image nel Color cerca in other inputs
-                for input in from_node.inputs:
-                    if input.is_linked:
-                        next_node = input.links[0].from_node
-                        print(f"Checking input {input.name}, found node type: {type(next_node).__name__}") #DEBUG
-                        if isinstance(next_node, bpy.types.ShaderNodeTexImage):
-                            if next_node.image:
-                                print(f"Found image in input {input.name}: {next_node.image.name}") #DEBUG
-                                return next_node.image.name
-                            
-            print("No image found in node chain") #DEBUG
+                    return trace_to_image_node(color_input, isAlbedo=isAlbedo)
+                # Se non c'è "Color", prova tutti gli input collegati
+                for inp in from_node.inputs:
+                    if inp.is_linked:
+                        result = trace_to_image_node(inp, isAlbedo=isAlbedo)
+                        if result != "[none]":
+                            return result
+
+            print("No image found in node chain")
             return "[none]"
-                
-        #extract emission
+
+        # Estrai le proprietà del materiale
         if material.use_nodes and material.node_tree:
             principled = material.node_tree.nodes.get('Principled BSDF')
             emission_node = material.node_tree.nodes.get('Emission')
-            
-            #convert emission (da RGBA blender a RGB Ovo)
+
+            # Conversione dell'emission (da RGBA Blender a RGB per OVO)
             if emission_node:
                 emission = emission_node.inputs[0].default_value
-                emission_color = emission[:3] if len(emission) > 2 else (0, 0, 0) #fallback
-                
+                emission_color = emission[:3] if len(emission) > 2 else (0, 0, 0)
+
             if principled:
-                # get base color and texture
+                # Base Color e relativa texture
                 base_color_input = principled.inputs.get('Base Color')
                 if base_color_input:
-                    if base_color_input.is_linked: #SE HO UNO SHADER GRAPH COLLEGATO ->
-                        albedo_texture = trace_to_image_node(base_color_input) #trace image node
+                    if base_color_input.is_linked:
+                        albedo_texture = trace_to_image_node(base_color_input, isAlbedo=True)
                     else:
-                        base_color = base_color_input.default_value # prendi albedo basato sui canali rgb
-                        base_color_rgb = base_color[:3] if len(base_color) > 2 else (0.8, 0.8, 0.8) #fallback
-                        alpha = base_color[3] if len(base_color) > 3 else 1.0 #estrazione alpha e fallback in caso
-                
-                # get other properties (gia in 0-1)
+                        base_color = base_color_input.default_value
+                        base_color_rgb = base_color[:3] if len(base_color) > 2 else (0.8, 0.8, 0.8)
+                        alpha = base_color[3] if len(base_color) > 3 else 1.0
+
+                # Proprietà del materiale
                 roughness = principled.inputs['Roughness'].default_value
                 metallic = principled.inputs['Metallic'].default_value
-                
-                # Get textures for other inputs (tracing image node)
+
+                # Altre texture (tramite tracciamento dei nodi)
                 normal_input = principled.inputs.get('Normal')
                 if normal_input:
                     normal_texture = trace_to_image_node(normal_input)
-                    
+
                 roughness_input = principled.inputs.get('Roughness')
                 if roughness_input:
                     roughness_texture = trace_to_image_node(roughness_input)
-                    
+
                 metallic_input = principled.inputs.get('Metallic')
                 if metallic_input:
                     metallic_texture = trace_to_image_node(metallic_input)
-                    
+
                 height_input = principled.inputs.get('Height')
                 if height_input:
                     height_texture = trace_to_image_node(height_input)
-        
-        # Write all the data
+
+        # Scrittura dei dati binari nel chunk
         chunk_data += struct.pack('3f', *emission_color)
         chunk_data += struct.pack('3f', *base_color_rgb)
         chunk_data += struct.pack('f', roughness)
         chunk_data += struct.pack('f', metallic)
         chunk_data += struct.pack('f', alpha)
-        
-        # Write texture paths
+
+        # Scrittura dei percorsi delle texture
         chunk_data += self.pack_string(albedo_texture)
         chunk_data += self.pack_string(normal_texture)
         chunk_data += self.pack_string(height_texture)
         chunk_data += self.pack_string(roughness_texture)
         chunk_data += self.pack_string(metallic_texture)
-        
-        # Write materal chunk
+
+        # Scrive l'header del chunk e il chunk stesso nel file
         self.write_chunk_header(file, ChunkType.MATERIAL, len(chunk_data))
         file.write(chunk_data)
 
-    def write_node_recursive(self, file, obj):
-        #scrive nodo e figli ricorsivamente: 
-        # se ho:
-        # node1
-        # |_____node 1a
-        # |     |______ node 1b
-        # |_____node 2
-        #
-        # scriverà 1 -> 1a -> 1b -> 2 e via cosi
-
-        if obj in self.processed_objects: # se gia processato skip
-            return
-        self.processed_objects.add(obj) #altrimenti aggiungo al set
-        
-        # scrivo prima i materiali se non sono stati ancora scritti
-        if obj.type == 'MESH':
-            for material_slot in obj.material_slots:
-                if material_slot.material and material_slot.material not in self.processed_objects:
-                    self.write_material_chunk(file, material_slot.material)
-                    self.processed_objects.add(material_slot.material)
-        
-        # conta i figli effettivi (escludi gli oggetti già processati)
-        real_children = [child for child in obj.children if child not in self.processed_objects]
-        num_children = len(real_children)
-
-        print(f"Processing object: {obj.name} (Type: {obj.type}) with {num_children} children") #DEBUG
-
-        # scrivo il nodo corrente con il numero corretto di figli
-        if obj.type == 'MESH':
-            self.write_mesh_chunk(file, obj, num_children)
-        elif obj.type == 'LIGHT':
-            self.write_light_chunk(file, obj, num_children)
-        elif obj.type == 'EMPTY':
-            self.write_node_chunk(file, obj, num_children)
-        else:
-            # per altri tipi (sconosciuti etc..) scrivo nodo base
-            self.write_node_chunk(file, obj, num_children)
-        
-        # processa ricorsivamente i figli
-        for child in real_children:
-            self.write_node_recursive(file, child)
-
-        
     def write_node_chunk(self, file, obj, num_children):
         """Write a basic node chunk for objects that aren't mesh or light"""
         chunk_data = b'' #binario
@@ -300,6 +597,7 @@ class OVO_Exporter:
         
         #!!!!!!!!!!!!!! CONVERSIONE MATRICE NODO!!!!!!!!!!!!!!!!!!!
 
+        matrix = obj.matrix_world.copy()
         #copia world matrix
         if obj.parent:
 
@@ -415,7 +713,76 @@ class OVO_Exporter:
         chunk_data += self.pack_vector3(max_box)
 
         # Write physics flag (0 = no physics)
-        chunk_data += struct.pack('B', 0)
+        has_physics = False
+        physics_type = 0
+
+        # Verifica se l'oggetto ha proprietà di fisica in Blender
+        if obj.rigid_body is not None:
+            has_physics = True
+            if obj.rigid_body.type == 'ACTIVE':
+                physics_type = 1  # Dynamic
+            elif obj.rigid_body.type == 'PASSIVE':
+                physics_type = 0  # Static
+
+        # Scrivi il flag physics
+        chunk_data += struct.pack('B', 1 if has_physics else 0)
+
+        # Se ha proprietà fisiche, aggiungi tutti i dati necessari
+        if has_physics:
+            # Impostazioni di base - usa valori di default se l'attributo non esiste
+            # Blender 4.x potrebbe avere nomi diversi per queste proprietà
+
+            # Collision continua - usa un valore di default
+            cont_collision = 1  # Default attivo
+
+            # Collision con altri corpi rigidi
+            collide_with_rbodies = 1 if obj.rigid_body.enabled else 0
+
+            # Tipo di collision shape
+            hull_type = 0  # Default box
+            if hasattr(obj.rigid_body, 'collision_shape'):
+                if obj.rigid_body.collision_shape == 'MESH':
+                    hull_type = 1
+                elif obj.rigid_body.collision_shape == 'CONVEX_HULL':
+                    hull_type = 2
+
+            # Pacchetta i byte di controllo
+            chunk_data += struct.pack('B', physics_type)
+            chunk_data += struct.pack('B', cont_collision)
+            chunk_data += struct.pack('B', collide_with_rbodies)
+            chunk_data += struct.pack('B', hull_type)
+
+            # Centro di massa (usa l'origine dell'oggetto o il centro della mesh)
+            # Calcola il centro della mesh
+            local_bbox_center = sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector()) / 8
+            mass_center = local_bbox_center
+
+            chunk_data += self.pack_vector3(mass_center)
+
+            # Proprietà fisiche - usa getter sicuri per evitare AttributeError
+            mass = getattr(obj.rigid_body, 'mass', 1.0)
+            static_friction = getattr(obj.rigid_body, 'friction', 0.5)
+            dynamic_friction = static_friction  # Usa lo stesso valore
+            bounciness = getattr(obj.rigid_body, 'restitution', 0.0)
+            linear_damping = getattr(obj.rigid_body, 'linear_damping', 0.04)
+            angular_damping = getattr(obj.rigid_body, 'angular_damping', 0.1)
+
+            # Scrivi i valori
+            chunk_data += struct.pack('f', mass)
+            chunk_data += struct.pack('f', static_friction)
+            chunk_data += struct.pack('f', dynamic_friction)
+            chunk_data += struct.pack('f', bounciness)
+            chunk_data += struct.pack('f', linear_damping)
+            chunk_data += struct.pack('f', angular_damping)
+
+            # Per ora non esportiamo hull personalizzati
+            nr_of_hulls = 0
+            chunk_data += struct.pack('I', nr_of_hulls)
+            chunk_data += struct.pack('I', 0)  # Padding
+
+            # Puntatori (nel file vengono impostati a zero)
+            chunk_data += struct.pack('Q', 0)  # physObj pointer
+            chunk_data += struct.pack('Q', 0)  # hull pointer
 
         # Write LODs (1 = single LOD)
         chunk_data += struct.pack('I', 1)
@@ -462,14 +829,25 @@ class OVO_Exporter:
         
         # CONVERSIONE COORDINATE LOCALI -> COME MESH GUARDA LI PER COMMENTO
 
-        if obj.parent:
+        # Matrice con solo traslazione, senza rotazione
+        # Crea una matrice identità
+        final_matrix = mathutils.Matrix.Identity(4)
 
-            final_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
+        # Ottieni la posizione e applicala alla matrice
+        if obj.parent:
+            parent_pos = obj.parent.matrix_world.translation
+            obj_pos = obj.matrix_world.translation
+            final_pos = obj_pos - parent_pos
         else:
-            print("___________________________________________PARENT ROOT")
-            matrix = obj.matrix_world.copy()
+            pos = obj.matrix_world.translation
+            # Converti solo la posizione
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            final_matrix = conversion @ matrix
+            final_pos = (conversion @ mathutils.Vector((pos.x, pos.y, pos.z, 1.0))).xyz
+
+        # Imposta solo la colonna della traslazione
+        final_matrix[0][3] = final_pos.x
+        final_matrix[1][3] = final_pos.y
+        final_matrix[2][3] = final_pos.z
 
         chunk_data += self.pack_matrix(final_matrix)
         # num of children
@@ -497,27 +875,27 @@ class OVO_Exporter:
         if light_data.type == 'POINT' or light_data.type == 'SPOT':
             radius = getattr(light_data, 'cutoff_distance', 100.0)
         elif light_data.type == 'SUN':
-            radius = 10000.0  # Large radius for directional lights TODO modificare ed estrai il campo intensity dalla directional
+            radius = 0 #according to exporter 3ds max con la scena per progetto grafica
         else:
-            radius = 100.0  # Default fallback
+            radius = 90.0  # Default fallback
 
         print(f"Debug - Light: {obj.name}, Type: {light_data.type}, Radius: {radius}")  #DEBUG
         chunk_data += struct.pack('f', radius)
 
         # direction
         if light_data.type in {'SUN', 'SPOT'}:
-            #CODICE SENZA TRASFORMAZIONE
-            #rot_mat = obj.matrix_world.to_3x3() 
-            #direction = (rot_mat @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()
-
-            #direzione in coordinate Blender
             rot_mat = obj.matrix_world.to_3x3()
-            raw_direction = rot_mat @ mathutils.Vector((0.0, 0.0, -1.0))
+            raw_direction = mathutils.Vector((0.0, 0.0, -1.0))
 
-            #direzione OpenGL
-            opengl_direction = mathutils.Vector((-raw_direction.x, raw_direction.z, -raw_direction.y))
-            
-            direction = opengl_direction.normalized()
+            print("Original direction:", raw_direction)
+
+            world_direction = rot_mat @ raw_direction
+            print("After world matrix:", world_direction)
+
+            conversion = mathutils.Matrix.Rotation(math.radians(-90), 3, 'X')
+            converted_direction = conversion @ world_direction
+            print("After conversion matrix:", converted_direction)
+            direction = converted_direction
         else:
             direction = mathutils.Vector((0.0, 0.0, -1.0)) #fallback
         chunk_data += self.pack_vector3(direction)
@@ -556,53 +934,51 @@ class OVO_Exporter:
         
         self.write_chunk_header(file, ChunkType.LIGHT, len(chunk_data))
         file.write(chunk_data)
-    
-
 
     def export(self):
-        #export fun
         try:
-            print("\n=== Starting OVO Export ===") #DEBUG
-            print(f"Export path: {self.filepath}") #DEBUG
-            
+            print("\n=== Starting OVO Export ===")
+            print(f"Export path: {self.filepath}")
+            print(f"Use mesh: {self.use_mesh}")
+            print(f"Use light: {self.use_light}")
+
             with open(self.filepath, 'wb') as file:
                 # Write object chunk (version)
                 self.write_object_chunk(file)
-                
+
                 # Process materials first
-                print("\nProcessing materials...") #DEBUG
+                print("\nProcessing materials...")
                 for material in bpy.data.materials:
                     if material is not None and material not in self.processed_objects:
-                        print(f"Processing material: {material.name}") #DEBUG
+                        print(f"Processing material: {material.name}")
                         self.write_material_chunk(file, material)
                         self.processed_objects.add(material)
-                
-                # get all root level objects (quelli orfani)
+
+                # Get root level objects (orphans)
                 root_objects = [obj for obj in bpy.data.objects if obj.parent is None]
                 num_roots = len(root_objects)
-                
-                # write root node first
+
+                # Write root node
                 chunk_data = b''
-                chunk_data += self.pack_string("[root]") 
-                chunk_data += self.pack_matrix(mathutils.Matrix.Identity(4))  # suppongo sia corretta la matrice identità a record di logica
-                chunk_data += struct.pack('I', num_roots)  # Numero di figli (oggetti root)
-                chunk_data += self.pack_string("[none]")  # Target node
-                
-                # Write root node first
+                chunk_data += self.pack_string("[root]")
+                chunk_data += self.pack_matrix(mathutils.Matrix.Identity(4))
+                chunk_data += struct.pack('I', num_roots)
+                chunk_data += self.pack_string("[none]")
+
                 self.write_chunk_header(file, ChunkType.NODE, len(chunk_data))
                 file.write(chunk_data)
-                
-                #processo tutti i nodi ricorsivamente come figli della root
+
+                # Process all nodes recursively as root children
                 print("\nProcessing objects...")
                 for obj in root_objects:
                     if obj not in self.processed_objects:
-                        print(f"\nProcessing root object: {obj.name} (Type: {obj.type})") #DEBUG
+                        print(f"\nProcessing root object: {obj.name} (Type: {obj.type})")
                         self.write_node_recursive(file, obj)
-                    
-            print("\nExport completed successfully!") #DEBUG
+
+            print("\nExport completed successfully!")
             return True
-                
-        except Exception as e: #stack trace in caso di exc
+
+        except Exception as e:
             import traceback
             print("\n=== Export Error ===")
             print(f"Error type: {type(e).__name__}")
@@ -611,30 +987,85 @@ class OVO_Exporter:
             traceback.print_exc()
             print("===================")
             return False
-        
-            
-class OVO_PT_export_main(Operator, ExportHelper): #proprietà per blender
+
+
+class OVO_PT_export_main(Operator, ExportHelper):
     bl_idname = "export_scene.ovo"
     bl_label = "Export OVO"
     filename_ext = ".ovo"
-    
+
     filter_glob: StringProperty(
         default="*.ovo",
         options={'HIDDEN'},
-    ) # type: ignore
-    
-    def execute(self, context): #execute fun
-        exporter = OVO_Exporter(context, self.filepath)
-        if exporter.export():
-            self.report({'INFO'}, "Export completed successfully")
-            return {'FINISHED'}
-        else:
-            # Retrieve error
-            import sys
+    )
+
+    use_mesh: BoolProperty(
+        name="Include Meshes",
+        description="Include mesh objects in the export",
+        default=True,
+    )
+
+    use_light: BoolProperty(
+        name="Include Lights",
+        description="Include light objects in the export",
+        default=True,
+    )
+
+    # Modified compression format to be a simple toggle
+    use_legacy_compression: BoolProperty(
+        name="Use S3TC Compression",
+        description="Use legacy S3TC compression (DXT1/DXT5) instead of higher quality BPTC compression (BC7)",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Include/Exclude Objects
+        box = layout.box()
+        box.label(text="Include:", icon='GHOST_ENABLED')
+        row = box.row()
+        row.prop(self, "use_mesh")
+        row.prop(self, "use_light")
+        layout.prop(self, "use_legacy_compression")
+
+    def execute(self, context):
+        try:
+            print("\n=== Starting OVO Export ===")
+            print(f"Export settings:")
+            print(f"- Use mesh: {self.use_mesh}")
+            print(f"- Use light: {self.use_light}")
+            print(f"- Use S3TC: {self.use_legacy_compression}")
+            print(f"- Output path: {self.filepath}")
+
+            # Crea l'esportatore
+            exporter = OVO_Exporter(
+                context,
+                self.filepath,
+                use_mesh=self.use_mesh,
+                use_light=self.use_light,
+                use_legacy_compression=self.use_legacy_compression  # Passing boolean instead of format string
+            )
+
+            # Esegui l'export
+            if exporter.export():
+                self.report({'INFO'}, "Export completed successfully")
+                return {'FINISHED'}
+            else:
+                self.report({'ERROR'}, "Export failed. Check system console for details.")
+                return {'CANCELLED'}
+
+        except Exception as e:
             import traceback
-            error_message = "".join(traceback.format_exception(*sys.exc_info()))
-            self.report({'ERROR'}, f"Export failed. Check system console for details.")
-            print(error_message)  # print error on console
+            error_message = "\n=== Export Error ===\n"
+            error_message += f"Error type: {type(e).__name__}\n"
+            error_message += f"Error message: {str(e)}\n"
+            error_message += "\nFull traceback:\n"
+            error_message += traceback.format_exc()
+            error_message += "\n===================\n"
+
+            print(error_message)
+            self.report({'ERROR'}, f"Export failed: {str(e)}")
             return {'CANCELLED'}
 
 def menu_func_export(self, context):
@@ -670,21 +1101,30 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Specifica il percorso del file .blend da caricare
-        blend_path = os.path.join(script_dir, "scenes", "scarpa.blend")
+        blend_path = os.path.join(script_dir, "../scenes", "scarpa2.blend")
 
         # Carica la scena
         bpy.ops.wm.open_mainfile(filepath=blend_path)
         print(f"Scena caricata da: {blend_path}")
 
         # Crea un percorso relativo alla cartella dello script per l'output
-        output_path = os.path.join(script_dir, "bin", "output.ovo")
+        output_path = os.path.join(script_dir, "../bin", "output.ovo")
 
-        # Esegui l'export con il percorso relativo
-        bpy.ops.export_scene.ovo(filepath=output_path)
+        # Esegui l'export con il percorso relativo e i parametri desiderati
+        bpy.ops.export_scene.ovo(
+            filepath=output_path,
+            use_mesh=True,          # Includi le mesh
+            use_light=True,         # Includi le luci
+            use_legacy_compression=True  # Usa compressione S3TC
+        )
         print(f"Export completato con successo! File salvato in: {output_path}")
 
     except Exception as e:
         print(f"Errore durante l'export: {e}")
+        # Stampa il traceback completo per debug
+        import traceback
+        traceback.print_exc()
 
     unregister()
     print("Addon OVO deregistrato.")
+
