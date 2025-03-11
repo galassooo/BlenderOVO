@@ -23,7 +23,6 @@ from bpy.props import StringProperty
 # ------------------------------------------------------------
 #   Funzioni di decodifica half-float (u, v) da un uint (32 bit)
 # ------------------------------------------------------------
-
 def half_to_float(h: int) -> float:
     """
     @fn half_to_float(h)
@@ -62,7 +61,6 @@ def decode_half2x16(packed_uv: int):
     v = half_to_float(h2)
     return (u, v)
 
-
 # ===================================
 #   Node Information Storage
 # ===================================
@@ -90,7 +88,6 @@ class NodeRecord:
     def __repr__(self):
         return f"NodeRecord(name={self.name}, type={self.node_type}, children_count={self.children_count})"
 
-
 # ====================================
 #   OVO Chunk
 # ====================================
@@ -115,406 +112,46 @@ class OVOChunk:
         header = file.read(8)
         if len(header) < 8:
             return None
+
         chunk_id, chunk_size = struct.unpack("<II", header)
         data = file.read(chunk_size)
         return OVOChunk(chunk_id, chunk_size, data)
 
-
 # ====================================
-#   OVO Importer
-# ====================================
-class OVOImporter:
-    """
-    @class OVOImporter
-    @brief Classe principale che gestisce il parsing di un file OVO e l'import in Blender.
-
-    Flusso:
-      1. read_ovo_file(): legge i chunk dal file.
-      2. parse_chunks(): crea NodeRecord (nodi, mesh, luci) e materiali.
-      3. build_hierarchy_stack_approach(): ricostruisce la gerarchia parent-figlio con uno stack.
-      4. establish_root_node(): se non esiste [root], lo crea (se serve).
-      5. apply_matrices_with_partial_rotation(): applica trasposizione + rotazione solo ai figli diretti di root.
-    """
-    def __init__(self, filepath):
-        """
-        @fn __init__(self, filepath)
-        @brief Inizializza l'importer con un percorso al file OVO.
-        @param filepath Stringa col percorso del file .ovo
-        """
-        self.filepath = filepath
-        self.chunks = []
-        self.materials = {}
-        self.texture_directory = os.path.dirname(filepath)
-        self.parsed_nodes = []
-
-    def read_ovo_file(self):
-        """
-        @fn read_ovo_file(self)
-        @brief Apre il file e legge tutti i chunk in self.chunks.
-        @return True se il file è stato letto con successo, False altrimenti.
-        """
-        print(f"[OVOImporter] Apertura file: {self.filepath}")
-        if not os.path.isfile(self.filepath):
-            print(f"[OVOImporter] ERRORE: file non trovato - {self.filepath}")
-            return False
-
-        with open(self.filepath, "rb") as file:
-            while True:
-                chunk = OVOChunk.read_chunk(file)
-                if chunk is None:
-                    break
-                self.chunks.append(chunk)
-
-        print(f"[OVOImporter] Lettura completata. Trovati {len(self.chunks)} chunk.")
-        return True
-
-    def import_scene(self):
-        """
-        @fn import_scene(self)
-        @brief Flusso principale di import. Legge il file, costruisce la scena e la gerarchia.
-        @return {'FINISHED'} se OK, {'CANCELLED'} se fallisce.
-        """
-        print(f"[OVOImporter.import_scene] Inizio import del file: {self.filepath}")
-        if not self.read_ovo_file():
-            return {'CANCELLED'}
-
-        self.parse_chunks()
-        self.build_hierarchy_stack_approach()
-        self.establish_root_node()
-        self.apply_matrices_with_partial_rotation()
-
-        print("[OVOImporter.import_scene] Gerarchia finale importata:")
-        self.print_final_hierarchy()
-        print("[OVOImporter.import_scene] Import completato con successo.")
-        return {'FINISHED'}
-
-    def parse_chunks(self):
-        """
-        @fn parse_chunks(self)
-        @brief Scorre self.chunks e crea materiali e NodeRecord per nodi, mesh, luci.
-               Non applica alcuna rotazione. Imposta l'oggetto Blender con matrix_world = Identity.
-        """
-        print("[OVOImporter.parse_chunks] Inizio analisi chunk.")
-        for i, chunk in enumerate(self.chunks):
-            cid = chunk.chunk_id
-            print(f"  > Chunk #{i} : ID={cid}, size={chunk.chunk_size}")
-
-            # Material
-            if cid == 9:
-                print("    [INFO] Trovato chunk 'Material'")
-                material = OVOMaterial.parse_material(chunk.data)
-                mat = material.create_blender_material(self.texture_directory)
-                self.materials[material.name] = material
-                print(f"    [INFO] Material creato: {material.name}")
-                continue
-
-            # Node
-            if cid == 1:
-                node_name, raw_matrix, children_count = self.parse_node_basic_raw(chunk.data)
-                node_obj = bpy.data.objects.new(node_name, None)
-                bpy.context.collection.objects.link(node_obj)
-                node_obj.matrix_world = mathutils.Matrix.Identity(4)
-
-                record = NodeRecord(node_name, "NODE", children_count, node_obj, raw_matrix)
-                self.parsed_nodes.append(record)
-                print(f"    [INFO] Creato NodeRecord: {record}")
-                continue
-
-            # Light
-            if cid == 16:
-                light_name, raw_matrix, children_count, light_data = self.parse_light_raw(chunk.data)
-                light_obj = bpy.data.objects.new(light_name, light_data)
-                bpy.context.collection.objects.link(light_obj)
-                light_obj.matrix_world = mathutils.Matrix.Identity(4)
-
-                record = NodeRecord(light_name, "LIGHT", children_count, light_obj, raw_matrix)
-                self.parsed_nodes.append(record)
-                print(f"    [INFO] Creato NodeRecord: {record}")
-                continue
-
-            # Mesh
-            if cid == 18:
-                mesh_name, raw_matrix, children_count, material_name, mesh_obj, physics_data = self.parse_mesh_raw(
-                    chunk.data)
-
-                # Applica il materiale, se presente
-                if material_name in self.materials:
-                    mat = self.materials[material_name].blender_material
-                    if mat:
-                        if not mesh_obj.data.materials:
-                            mesh_obj.data.materials.append(mat)
-                        else:
-                            mesh_obj.data.materials[0] = mat
-
-                bpy.context.collection.objects.link(mesh_obj)
-                mesh_obj.matrix_world = mathutils.Matrix.Identity(4)
-
-                # Assegna la fisica, se presente
-                if physics_data:
-                    OVOMesh.apply_physics_to_object(mesh_obj, physics_data)
-
-                record = NodeRecord(mesh_name, "MESH", children_count, mesh_obj, raw_matrix)
-                self.parsed_nodes.append(record)
-                print(f"    [INFO] Creato NodeRecord: {record}")
-                continue
-
-            # Ignorato
-            print(f"    [WARNING] Chunk ID={cid} non gestito (ignorato).")
-
-        print("[OVOImporter.parse_chunks] Fine analisi chunk.")
-
-    def build_hierarchy_stack_approach(self):
-        """
-        @fn build_hierarchy_stack_approach(self)
-        @brief Ricostruisce la gerarchia parent-figlio usando uno stack.
-               Per ogni NodeRecord, se lo stack top ha children_count>0, set come parent.
-        """
-        print("[OVOImporter.build_hierarchy_stack_approach] Inizio.")
-        stack = []
-        for i, record in enumerate(self.parsed_nodes):
-            print(f"  >> Elaboro record #{i}: {record}")
-            while stack and stack[-1].children_count == 0:
-                popped = stack.pop()
-                print(f"     [STACK] Rimosso dallo stack: {popped}")
-
-            if stack:
-                parent_rec = stack[-1]
-                record.parent = parent_rec
-                parent_rec.children_count -= 1
-                print(f"     [HIER] '{record.name}' figlio di '{parent_rec.name}'. "
-                      f"Nuovo children_count={parent_rec.children_count}")
-
-            if record.children_count > 0:
-                stack.append(record)
-                print(f"     [STACK] Aggiunto allo stack: {record}")
-
-        print("[OVOImporter.build_hierarchy_stack_approach] Impostazione parentela in Blender.")
-        for rec in self.parsed_nodes:
-            if rec.parent is not None:
-                rec.blender_object.parent = rec.parent.blender_object
-                rec.blender_object.matrix_parent_inverse = rec.parent.blender_object.matrix_world.inverted()
-                print(f"     [BLENDER] '{rec.name}' -> parent = '{rec.parent.name}'")
-
-    def establish_root_node(self):
-        """
-        @fn establish_root_node(self)
-        @brief Se manca un nodo [root] e ci sono più top-level, crea un oggetto root fittizio.
-        """
-        print("[OVOImporter.establish_root_node] Controllo esistenza '[root]' e nodi top-level.")
-        for rec in self.parsed_nodes:
-            if rec.name == "[root]":
-                print(f"  [INFO] Uso il nodo '[root]' come root esplicito.")
-                return
-
-        toplevel = [r for r in self.parsed_nodes if r.parent is None]
-        if len(toplevel) > 1:
-            print(f"  [INFO] Creo root fittizio. Trovati {len(toplevel)} top-level.")
-            root_obj = bpy.data.objects.new("[root]", None)
-            bpy.context.collection.objects.link(root_obj)
-            for r in toplevel:
-                r.blender_object.parent = root_obj
-                r.blender_object.matrix_parent_inverse = root_obj.matrix_world.inverted()
-                r.parent = None
-
-    def apply_matrices_with_partial_rotation(self):
-        """
-        @fn apply_matrices_with_partial_rotation(self)
-        @brief Applica la conversione di coordinate:
-               - Ai figli diretti di [root]: trasposizione + rotazione +90° su X
-               - Ai nodi di livello inferiore: sola trasposizione
-               - Se un nodo è root, rimane identity.
-        """
-        print("[OVOImporter] apply_matrices_with_partial_rotation: inizio.")
-        for rec in self.parsed_nodes:
-            if rec.name == "[root]":
-                print(f"   - skip rotation for [root]")
-                continue
-
-            # Trasponi la matrice row-major
-            local_mat = rec.raw_matrix.copy()
-            local_mat.transpose()
-
-            # Se parent == [root], ruotiamo di 90° su X
-            if rec.parent and rec.parent.name == "[root]":
-                conversion_90_x = mathutils.Matrix([
-                    [1, 0, 0, 0],
-                    [0, 0, -1, 0],
-                    [0, 1, 0, 0],
-                    [0, 0, 0, 1]
-                ])
-                local_mat = conversion_90_x @ local_mat
-                print(f"   - Node '{rec.name}': +90° su X (parent = [root])")
-            else:
-                print(f"   - Node '{rec.name}': no rotation (parent != [root])")
-
-            # Assegna la matrix_basis
-            rec.blender_object.matrix_basis = local_mat
-
-    def print_final_hierarchy(self):
-        """
-        @fn print_final_hierarchy(self)
-        @brief Stampa la gerarchia di nodi ricostruita, per debug.
-        """
-        print("[OVOImporter.print_final_hierarchy] Inizio stampa.\n")
-        top_nodes = [r for r in self.parsed_nodes if r.parent is None]
-
-        def _print_rec(rr, indent=0):
-            print("  " * indent + f"+ {rr.name} ({rr.node_type})")
-            for child in self.parsed_nodes:
-                if child.parent == rr:
-                    _print_rec(child, indent+1)
-
-        for tnode in top_nodes:
-            _print_rec(tnode)
-        print("\n[OVOImporter.print_final_hierarchy] Fine stampa.")
-
-
-    # ----------------------------------------------------------------------
-    #   Funzioni di parse "raw" (senza rotazione) per node, mesh, light
-    # ----------------------------------------------------------------------
-
-    def parse_node_basic_raw(self, chunk_data):
-        """
-        @fn parse_node_basic_raw(self, chunk_data)
-        @brief Legge un chunk di tipo NODE (ID=1), estrae il nome, la matrice e il children_count.
-        @param chunk_data Byte array del chunk.
-        @return (node_name, raw_matrix, children_count).
-        """
-        file_obj = io.BytesIO(chunk_data)
-        node_name = OVOScene._read_string(file_obj)
-
-        matrix_bytes = file_obj.read(64)
-        matrix_values = struct.unpack("<16f", matrix_bytes)
-        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0,16,4)])
-
-        children_count = struct.unpack("<I", file_obj.read(4))[0]
-        _target_node = OVOScene._read_string(file_obj)
-
-        print(f"[parse_node_basic_raw] name={node_name}, children={children_count}")
-        return node_name, raw_matrix, children_count
-
-    def parse_mesh_raw(self, chunk_data):
-        file = io.BytesIO(chunk_data)
-        mesh_name = OVOScene._read_string(file)
-
-        matrix_bytes = file.read(64)
-        matrix_values = struct.unpack('16f', matrix_bytes)
-        raw_matrix = mathutils.Matrix([matrix_values[i:i + 4] for i in range(0, 16, 4)])
-
-        children_count = struct.unpack('I', file.read(4))[0]
-        _target = OVOScene._read_string(file)
-        mesh_subtype = struct.unpack('B', file.read(1))[0]
-        material_name = OVOScene._read_string(file)
-
-        print(f"[parse_mesh_raw] Mesh='{mesh_name}', child={children_count}, mat='{material_name}'")
-
-        # Bounding sphere + minBox + maxBox
-        file.seek(4 + 12 + 12, 1)
-
-        # Parsing dei dati di fisica
-        physics_flag = struct.unpack('B', file.read(1))[0]
-        physics_data = OVOMesh._read_physics_data(file) if physics_flag else None
-
-        lod_count = struct.unpack('I', file.read(4))[0]
-        if lod_count == 0:
-            print(f"[WARNING] Mesh '{mesh_name}' ha 0 LOD! Creando una mesh di fallback.")
-            mesh_data = bpy.data.meshes.new(mesh_name)
-            obj = bpy.data.objects.new(mesh_name, mesh_data)
-            return mesh_name, raw_matrix, children_count, material_name, obj, physics_data
-
-        # LOD0 - Lettura vertici, facce e UV
-        vertex_count, face_count = struct.unpack('2I', file.read(8))
-        vertices, faces, uvs = [], [], []
-
-        for _ in range(vertex_count):
-            pos = struct.unpack('3f', file.read(12))
-            _normalData = struct.unpack('I', file.read(4))[0]
-            uvData = struct.unpack('I', file.read(4))[0]
-            _tangent = file.read(4)
-
-            vertices.append(pos)
-            uv = decode_half2x16(uvData)
-            uvs.append(uv)
-
-        for _ in range(face_count):
-            face = struct.unpack('3I', file.read(12))
-            faces.append(face)
-
-        # Controllo che ci siano effettivamente vertici e facce
-        if len(vertices) == 0 or len(faces) == 0:
-            print(f"[ERROR] Mesh '{mesh_name}' non ha vertici o facce validi!")
-            return mesh_name, raw_matrix, children_count, material_name, None, physics_data
-
-        # Creazione della mesh in Blender
-        mesh_data = bpy.data.meshes.new(mesh_name)
-        mesh_data.from_pydata(vertices, [], faces)
-        mesh_data.update()
-
-        # Creazione UV Map
-        if len(uvs) == vertex_count:
-            uv_layer = mesh_data.uv_layers.new(name="UVMap")
-            for poly in mesh_data.polygons:
-                for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                    vert_idx = mesh_data.loops[loop_idx].vertex_index
-                    uv_layer.data[loop_idx].uv = uvs[vert_idx]
-
-        mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
-        print(f"[parse_mesh_raw] Creato obj '{mesh_name}' con {vertex_count} vert e {face_count} facce.")
-
-        return mesh_name, raw_matrix, children_count, material_name, mesh_obj, physics_data
-
-    def parse_light_raw(self, chunk_data):
-        """
-        @fn parse_light_raw(self, chunk_data)
-        @brief Legge un chunk di tipo LIGHT (ID=16), crea l'oggetto Light in Blender.
-        @param chunk_data Byte array del chunk.
-        @return (light_name, raw_matrix, children_count, light_data).
-        """
-        file = io.BytesIO(chunk_data)
-        name = OVOScene._read_string(file)
-        matrix_bytes = file.read(64)
-        matrix_values = struct.unpack("<16f", matrix_bytes)
-        raw_matrix = mathutils.Matrix([matrix_values[i:i+4] for i in range(0,16,4)])
-        child_count = struct.unpack("<I", file.read(4))[0]
-        _ = OVOScene._read_string(file)
-        light_type = struct.unpack("<B", file.read(1))[0]
-        color = struct.unpack("<3f", file.read(12))
-        radius = struct.unpack("<f", file.read(4))[0]
-        direction = struct.unpack("<3f", file.read(12))
-        cutoff = struct.unpack("<f", file.read(4))[0]
-        spot_exponent = struct.unpack("<f", file.read(4))[0]
-        shadow = struct.unpack("<B", file.read(1))[0]
-        volumetric = struct.unpack("<B", file.read(1))[0]
-
-        ldata = OVOLight._create_blender_light_data(name, light_type, color, radius,
-                                                    cutoff, spot_exponent, shadow)
-        return name, raw_matrix, child_count, ldata
-
-# ====================================
-#  OVOMesh (Updated with Physics)
+#  OVOMesh (gestisce i dati fisici)
 # ====================================
 class OVOMesh:
     """
     @class OVOMesh
-    @brief Rappresenta una mesh OVO con dati di vertici, UV e proprietà fisiche.
+    @brief Racchiude funzioni ausiliarie per la parte fisica delle mesh OVO.
     """
     @staticmethod
     def _read_physics_data(file_obj):
         """
         @fn _read_physics_data(file_obj)
-        @brief Legge i dati fisici della mesh.
-        @return Dizionario contenente i dati fisici.
+        @brief Legge i dati fisici della mesh (tipo, hull, mass, etc.).
+        @return Un dict con tutti i campi della fisica.
         """
         print("    [OVOMesh._read_physics_data] Lettura dati fisici.")
         start_pos = file_obj.tell()
 
-        type_ = struct.unpack('B', file_obj.read(1))[0]  # Tipo di corpo rigido
-        file_obj.seek(3, 1)  # Ignoriamo collisioni e altri flag
+        # 1 byte: type_
+        type_ = struct.unpack('B', file_obj.read(1))[0]
 
-        hull_type = struct.unpack('B', file_obj.read(1))[0]  # Tipo di collisione
-        mass_center = struct.unpack('<3f', file_obj.read(12))  # Centro di massa
+        # 1 byte: hull_type
+        hull_type = struct.unpack('B', file_obj.read(1))[0]
+
+        # 2 byte: se il tuo file ha collideWithRB, contCollision.
+        file_obj.seek(2, 1)
+
+        # 12 byte: massCenter
+        mass_center = struct.unpack('<3f', file_obj.read(12))
+
+        # 24 byte: mass, staticFric, dynFric, bounciness, linDamp, angDamp
         mass, static_fric, dyn_fric, bounciness, lin_damp, ang_damp = struct.unpack('<6f', file_obj.read(24))
-        nr_hulls, _pad = struct.unpack('<II', file_obj.read(8))  # Numero di hull custom (ignorati per ora)
+
+        # 8 byte: nr_hulls e pad
+        nr_hulls, _pad = struct.unpack('<II', file_obj.read(8))
 
         end_pos = file_obj.tell()
         print(f"    [OVOMesh._read_physics_data] Bytes letti: {end_pos - start_pos}")
@@ -527,39 +164,58 @@ class OVOMesh:
             "dynamicFriction": dyn_fric,
             "bounciness": bounciness,
             "linearDamping": lin_damp,
-            "angularDamping": ang_damp,
+            "angularDamping": ang_damp
         }
 
     @staticmethod
     def apply_physics_to_object(obj, phys_data):
-        print(f"    [OVOMesh] Applying physics to '{obj.name}'")
+        """
+        @fn apply_physics_to_object(obj, phys_data)
+        @brief Applica i parametri di fisica a un oggetto Blender (Rigid Body).
+        """
+        if not obj or obj.type != 'MESH':
+            print(f"    [OVOMesh.apply_physics_to_object] WARNING: '{obj.name}' non è una mesh.")
+            return
 
-        if obj.type != 'MESH':
-            print(f"    [WARNING] Object '{obj.name}' is not a mesh! Assigning a blank mesh.")
-            mesh_data = bpy.data.meshes.new(obj.name)
-            obj.data = mesh_data
-
-        obj.select_set(True)
+        print(f"    [OVOMesh] Assegno fisica a '{obj.name}' con parametri={phys_data}")
+        bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+
+        # Aggiungiamo il rigid body come 'ACTIVE'
         bpy.ops.rigidbody.object_add(type='ACTIVE')
-
         rb = obj.rigid_body
-        rb.type = 'ACTIVE' if phys_data["type"] == 1 else 'PASSIVE'
 
-        hull_map = {1: 'SPHERE', 2: 'BOX', 3: 'CAPSULE', 4: 'CONVEX_HULL', 7: 'MESH'}
+        # Se type == 1 => ACTIVE, se type == 3 => PASSIVE, etc.
+        if phys_data["type"] == 1:  # Dynamic
+            rb.type = 'ACTIVE'
+        elif phys_data["type"] == 3:  # Static
+            rb.type = 'PASSIVE'
+        else:
+            # Altri casi (2=Kinematic) => Blender non lo supporta esattamente, potresti settare ACTIVE con constraints
+            rb.type = 'ACTIVE'
+
+        # Mappa hull types
+        hull_map = {
+            1: 'SPHERE',
+            2: 'BOX',
+            3: 'CAPSULE',
+            4: 'CONVEX_HULL',
+            5: 'CONVEX_HULL',
+            7: 'MESH'
+        }
         rb.collision_shape = hull_map.get(phys_data["hullType"], 'BOX')
 
         rb.mass = phys_data["mass"]
+        # In Blender friction => dynamic friction
         rb.friction = phys_data["dynamicFriction"]
         rb.restitution = phys_data["bounciness"]
         rb.linear_damping = phys_data["linearDamping"]
         rb.angular_damping = phys_data["angularDamping"]
 
-        # ✅ Force visibility in viewport
-        obj.hide_set(False)  # Ensure object is visible
-        obj.hide_viewport = False  # Ensure it is rendered in viewport
-        obj.display_type = 'TEXTURED'  # Ensure it appears as a solid mesh
-        obj.show_wire = False  # Disable wireframe overlay
+        # Forza la visualizzazione come solido
+        obj.display_type = 'TEXTURED'
+        obj.hide_viewport = False
 
         obj.select_set(False)
 
@@ -591,17 +247,18 @@ class OVOMaterial:
         """
         file = io.BytesIO(chunk_data)
         name = OVOScene._read_string(file)
+
         emissive = struct.unpack("<3f", file.read(12))
         base_color = struct.unpack("<3f", file.read(12))
         roughness = struct.unpack("<f", file.read(4))[0]
         metallic = struct.unpack("<f", file.read(4))[0]
         transparency = struct.unpack("<f", file.read(4))[0]
 
-        ttypes = ["albedo","normal","height","roughness","metalness"]
+        ttypes = ["albedo", "normal", "height", "roughness", "metalness"]
         textures = {}
         for t in ttypes:
-            tname = OVOScene._read_string(file)
-            textures[t] = tname if tname != "[none]" else None
+            t_name = OVOScene._read_string(file)
+            textures[t] = t_name if t_name != "[none]" else None
 
         return OVOMaterial(name, base_color, roughness, metallic, transparency, emissive, textures)
 
@@ -614,12 +271,14 @@ class OVOMaterial:
         """
         mat = bpy.data.materials.new(name=self.name)
         mat.use_nodes = True
+
         bsdf = None
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
                 bsdf = node
                 break
-        if not bsdf:
+
+        if bsdf is None:
             print(f"[OVOMaterial] Principled BSDF non trovato in {self.name}")
             self.blender_material = mat
             return mat
@@ -628,14 +287,16 @@ class OVOMaterial:
         bsdf.inputs["Base Color"].default_value = (*self.base_color, 1.0)
         bsdf.inputs["Roughness"].default_value = self.roughness
         bsdf.inputs["Metallic"].default_value = self.metallic
+
         if self.transparency < 1.0:
             mat.blend_method = 'BLEND'
             mat.shadow_method = 'HASHED'
             bsdf.inputs["Alpha"].default_value = self.transparency
-        if "Emission" in bsdf.inputs:
-            bsdf.inputs["Emission"].default_value = (*self.emissive,1.0)
 
-        # Se c'è una texture albedo, proviamo a caricarla
+        if "Emission" in bsdf.inputs:
+            bsdf.inputs["Emission"].default_value = (*self.emissive, 1.0)
+
+        # Se c'è una texture albedo, la carichiamo
         albedo_tex = self.textures.get("albedo")
         if albedo_tex and albedo_tex != "[none]":
             texture_path = os.path.join(texdir, albedo_tex)
@@ -645,16 +306,14 @@ class OVOMaterial:
                     tex_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
                     tex_node.image = img
                     tex_node.label = "Albedo Texture"
-                    # Collega l'uscita Color al Base Color
                     mat.node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
                 except Exception as ex:
                     print(f"[OVOMaterial] Errore caricando '{texture_path}': {ex}")
             else:
-                print(f"[OVOMaterial] File texture non trovato: {texture_path}")
+                print(f"[OVOMaterial] Texture '{albedo_tex}' non trovata in {texdir}")
 
         self.blender_material = mat
         return mat
-
 
 # ====================================
 #  OVOLight
@@ -670,19 +329,19 @@ class OVOLight:
         @fn _create_blender_light_data(...)
         @brief Crea un bpy.types.Light configurato come Omni, Sun o Spot.
         """
-        if ltype == 0:  # point
+        if ltype == 0:  # OMNI
             ldata = bpy.data.lights.new(name=name, type='POINT')
             ldata.color = color
             ldata.energy = radius * 10
             ldata.use_shadow = bool(shadow)
             return ldata
-        elif ltype == 1: # sun
+        elif ltype == 1:  # DIRECTIONAL
             ldata = bpy.data.lights.new(name=name, type='SUN')
             ldata.color = color
             ldata.energy = radius * 10
             ldata.use_shadow = bool(shadow)
             return ldata
-        elif ltype == 2: # spot
+        elif ltype == 2:  # SPOT
             ldata = bpy.data.lights.new(name=name, type='SPOT')
             ldata.color = color
             ldata.energy = radius * 10
@@ -691,7 +350,7 @@ class OVOLight:
             ldata.use_shadow = bool(shadow)
             return ldata
         else:
-            # fallback point
+            # fallback
             ldata = bpy.data.lights.new(name=name, type='POINT')
             return ldata
 
@@ -719,6 +378,342 @@ class OVOScene:
             chars.append(c)
         return b''.join(chars).decode('utf-8', errors='replace')
 
+# ====================================
+#  OVOImporter
+# ====================================
+class OVOImporter:
+    """
+    @class OVOImporter
+    @brief Classe principale che gestisce il parsing di un file OVO e l'import in Blender.
+    """
+    def __init__(self, filepath):
+        """
+        @fn __init__(self, filepath)
+        @brief Inizializza l'importer con un percorso al file .ovo.
+        """
+        self.filepath = filepath
+        self.chunks = []
+        self.materials = {}
+        self.texture_directory = os.path.dirname(filepath)
+        self.parsed_nodes = []
+
+    def read_ovo_file(self):
+        """
+        @fn read_ovo_file(self)
+        @brief Apre il file e legge tutti i chunk in self.chunks.
+        """
+        print(f"[OVOImporter] Apertura file: {self.filepath}")
+        if not os.path.isfile(self.filepath):
+            print(f"[OVOImporter] ERRORE: file non trovato - {self.filepath}")
+            return False
+
+        with open(self.filepath, "rb") as file:
+            while True:
+                chunk = OVOChunk.read_chunk(file)
+                if chunk is None:
+                    break
+                self.chunks.append(chunk)
+
+        print(f"[OVOImporter] Lettura completata. Trovati {len(self.chunks)} chunk.")
+        return True
+
+    def import_scene(self):
+        """
+        @fn import_scene(self)
+        @brief Flusso principale di import. Legge il file, crea nodi/luci/mesh e costruisce la gerarchia.
+        """
+        print(f"[OVOImporter.import_scene] Inizio import: {self.filepath}")
+        if not self.read_ovo_file():
+            return {'CANCELLED'}
+
+        self.parse_chunks()
+        self.build_hierarchy_stack_approach()
+        self.establish_root_node()
+        self.apply_matrices_with_partial_rotation()
+
+        print("[OVOImporter.import_scene] Gerarchia finale importata:")
+        self.print_final_hierarchy()
+        return {'FINISHED'}
+
+    def parse_chunks(self):
+        """
+        @fn parse_chunks(self)
+        @brief Scorre i chunk e crea materiali, nodi, luci, mesh (con fisica).
+        """
+        print("[OVOImporter.parse_chunks] Inizio analisi chunk.")
+        for i, chunk in enumerate(self.chunks):
+            cid = chunk.chunk_id
+            print(f"  > Chunk #{i}, ID={cid}, size={chunk.chunk_size}")
+
+            if cid == 9:  # MATERIAL
+                material = OVOMaterial.parse_material(chunk.data)
+                mat = material.create_blender_material(self.texture_directory)
+                self.materials[material.name] = material
+                print(f"    [INFO] Creato Material '{material.name}'")
+                continue
+
+            if cid == 1:  # NODE
+                node_name, raw_matrix, children = self.parse_node_basic_raw(chunk.data)
+                node_obj = bpy.data.objects.new(node_name, None)
+                bpy.context.collection.objects.link(node_obj)
+                node_obj.matrix_world = mathutils.Matrix.Identity(4)
+                rec = NodeRecord(node_name, "NODE", children, node_obj, raw_matrix)
+                self.parsed_nodes.append(rec)
+                print(f"    [INFO] Creato NodeRecord: {rec}")
+                continue
+
+            if cid == 16:  # LIGHT
+                light_name, raw_matrix, children, light_data = self.parse_light_raw(chunk.data)
+                light_obj = bpy.data.objects.new(light_name, light_data)
+                bpy.context.collection.objects.link(light_obj)
+                light_obj.matrix_world = mathutils.Matrix.Identity(4)
+                rec = NodeRecord(light_name, "LIGHT", children, light_obj, raw_matrix)
+                self.parsed_nodes.append(rec)
+                print(f"    [INFO] Creato Light NodeRecord: {rec}")
+                continue
+
+            if cid == 18:  # MESH
+                mesh_name, raw_matrix, children, mat_name, mesh_obj, phys_data = self.parse_mesh_raw(chunk.data)
+
+                if mat_name in self.materials:
+                    mat = self.materials[mat_name].blender_material
+                    if mat:
+                        if not mesh_obj.data.materials:
+                            mesh_obj.data.materials.append(mat)
+                        else:
+                            mesh_obj.data.materials[0] = mat
+
+                bpy.context.collection.objects.link(mesh_obj)
+                mesh_obj.matrix_world = mathutils.Matrix.Identity(4)
+
+                if phys_data:
+                    OVOMesh.apply_physics_to_object(mesh_obj, phys_data)
+
+                rec = NodeRecord(mesh_name, "MESH", children, mesh_obj, raw_matrix)
+                self.parsed_nodes.append(rec)
+                print(f"    [INFO] Creato Mesh NodeRecord: {rec}")
+                continue
+
+            print(f"    [WARNING] Chunk ID={cid} non gestito.")
+        print("[OVOImporter.parse_chunks] Fine analisi chunk.")
+
+    def build_hierarchy_stack_approach(self):
+        """
+        @fn build_hierarchy_stack_approach
+        @brief Ricostruisce la gerarchia parent-child con uno stack, come da struttura OVO.
+        """
+        print("[OVOImporter.build_hierarchy_stack_approach] Inizio.")
+        stack = []
+        for i, record in enumerate(self.parsed_nodes):
+            while stack and stack[-1].children_count == 0:
+                popped = stack.pop()
+                print(f"      [STACK] Rimosso: {popped}")
+
+            if stack:
+                parent = stack[-1]
+                record.parent = parent
+                parent.children_count -= 1
+                print(f"      [HIER] '{record.name}' figlio di '{parent.name}'")
+
+            if record.children_count > 0:
+                stack.append(record)
+
+        print("[OVOImporter.build_hierarchy_stack_approach] Impostazione parent in Blender.")
+        for rec in self.parsed_nodes:
+            if rec.parent:
+                rec.blender_object.parent = rec.parent.blender_object
+                rec.blender_object.matrix_parent_inverse = rec.parent.blender_object.matrix_world.inverted()
+                print(f"      [BLENDER] '{rec.name}' -> parent='{rec.parent.name}'")
+
+    def establish_root_node(self):
+        """
+        @fn establish_root_node
+        @brief Se manca [root] e c'è più di un toplevel, crea un root fittizio.
+        """
+        print("[OVOImporter.establish_root_node] Check root esistente.")
+        root_found = any(r.name == "[root]" for r in self.parsed_nodes)
+        if root_found:
+            print("[INFO] [root] esiste già.")
+            return
+
+        toplevel = [r for r in self.parsed_nodes if r.parent is None]
+        if len(toplevel) > 1:
+            print(f"[INFO] Creo root fittizio, toplevel={len(toplevel)}.")
+            root_obj = bpy.data.objects.new("[root]", None)
+            bpy.context.collection.objects.link(root_obj)
+            for r in toplevel:
+                r.blender_object.parent = root_obj
+                r.blender_object.matrix_parent_inverse = root_obj.matrix_world.inverted()
+                r.parent = None
+
+    def apply_matrices_with_partial_rotation(self):
+        """
+        @fn apply_matrices_with_partial_rotation
+        @brief Fa la trasposizione + rotazione di 90° su X per i figli diretti di [root].
+        """
+        print("[OVOImporter] apply_matrices_with_partial_rotation.")
+        for rec in self.parsed_nodes:
+            if rec.name == "[root]":
+                print("   - skip [root]")
+                continue
+            mat = rec.raw_matrix.copy()
+            mat.transpose()
+
+            if rec.parent and rec.parent.name == "[root]":
+                # Ruota di 90° su X
+                conv_90_x = mathutils.Matrix([
+                    [1, 0, 0, 0],
+                    [0, 0, -1, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 0, 1]
+                ])
+                mat = conv_90_x @ mat
+                print(f"   - Node '{rec.name}' => +90° su X (parent=[root])")
+
+            rec.blender_object.matrix_basis = mat
+
+    def print_final_hierarchy(self):
+        """
+        @fn print_final_hierarchy
+        @brief Stampa la gerarchia resultante.
+        """
+        print("[OVOImporter.print_final_hierarchy]")
+
+        top_nodes = [r for r in self.parsed_nodes if r.parent is None]
+        def _rec_print(nodo, indent=0):
+            print("  " * indent + f"+ {nodo.name} ({nodo.node_type})")
+            for child in self.parsed_nodes:
+                if child.parent == nodo:
+                    _rec_print(child, indent+1)
+
+        for top in top_nodes:
+            _rec_print(top)
+
+    # ---------------------------------------------------------------
+    # Parse "raw" functions for Node, Mesh, Light
+    # ---------------------------------------------------------------
+    def parse_node_basic_raw(self, chunk_data):
+        """
+        @fn parse_node_basic_raw
+        @brief Legge chunk ID=1 (NODE).
+        """
+        file_obj = io.BytesIO(chunk_data)
+        node_name = OVOScene._read_string(file_obj)
+
+        matrix_bytes = file_obj.read(64)
+        matrix_vals = struct.unpack("<16f", matrix_bytes)
+        raw_matrix = mathutils.Matrix([matrix_vals[i:i+4] for i in range(0,16,4)])
+
+        children = struct.unpack("<I", file_obj.read(4))[0]
+        _target = OVOScene._read_string(file_obj)
+
+        print(f"[parse_node_basic_raw] name={node_name}, children={children}")
+        return node_name, raw_matrix, children
+
+    def parse_mesh_raw(self, chunk_data):
+        """
+        @fn parse_mesh_raw
+        @brief Legge chunk ID=18 (MESH), inclusa la sezione fisica e LOD0 con UV.
+        @return (mesh_name, raw_matrix, children_count, material_name, mesh_obj, physics_data)
+        """
+        file = io.BytesIO(chunk_data)
+        mesh_name = OVOScene._read_string(file)
+
+        mbytes = file.read(64)
+        mvals = struct.unpack('<16f', mbytes)
+        raw_matrix = mathutils.Matrix([mvals[i:i+4] for i in range(0,16,4)])
+
+        children = struct.unpack("<I", file.read(4))[0]
+        _target = OVOScene._read_string(file)
+        mesh_subtype = struct.unpack('B', file.read(1))[0]
+        material_name = OVOScene._read_string(file)
+
+        print(f"[parse_mesh_raw] Mesh='{mesh_name}', children={children}, mat='{material_name}'")
+
+        # Salta bounding sphere + minBox + maxBox
+        file.seek(4 + 12 + 12, 1)
+
+        physics_flag = struct.unpack('B', file.read(1))[0]
+        physics_data = None
+        if physics_flag:
+            physics_data = OVOMesh._read_physics_data(file)
+
+        lod_count = struct.unpack('I', file.read(4))[0]
+        print(f"[parse_mesh_raw] LodCount={lod_count}")
+
+        if lod_count == 0:
+            # Creiamo un oggetto mesh vuoto
+            fallback = bpy.data.meshes.new(mesh_name)
+            obj = bpy.data.objects.new(mesh_name, fallback)
+            return mesh_name, raw_matrix, children, material_name, obj, physics_data
+
+        vertex_count, face_count = struct.unpack('2I', file.read(8))
+        print(f"   [parse_mesh_raw] vertex_count={vertex_count}, face_count={face_count}")
+
+        vertices = []
+        faces = []
+        uvs = []
+
+        for _ in range(vertex_count):
+            pos = struct.unpack('<3f', file.read(12))
+            _normalData = struct.unpack('<I', file.read(4))[0]
+            uvData = struct.unpack('<I', file.read(4))[0]
+            _tangent = file.read(4)
+
+            vertices.append(pos)
+            uv = decode_half2x16(uvData)
+            uvs.append(uv)
+
+        for _ in range(face_count):
+            f = struct.unpack('<3I', file.read(12))
+            faces.append(f)
+
+        # Creiamo la mesh
+        mesh_data = bpy.data.meshes.new(mesh_name)
+        mesh_data.from_pydata(vertices, [], faces)
+        mesh_data.update()
+
+        # Se abbiamo UV
+        if len(uvs) == vertex_count:
+            uv_layer = mesh_data.uv_layers.new(name="UVMap")
+            for poly in mesh_data.polygons:
+                for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
+                    vert_idx = mesh_data.loops[loop_idx].vertex_index
+                    uv_layer.data[loop_idx].uv = uvs[vert_idx]
+
+        mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
+        print(f"[parse_mesh_raw] creato obj '{mesh_name}' con {vertex_count} vert e {face_count} facce.")
+
+        return mesh_name, raw_matrix, children, material_name, mesh_obj, physics_data
+
+    def parse_light_raw(self, chunk_data):
+        """
+        @fn parse_light_raw
+        @brief Legge chunk ID=16 (LIGHT).
+        """
+        file = io.BytesIO(chunk_data)
+        light_name = OVOScene._read_string(file)
+
+        mat_bytes = file.read(64)
+        mat_vals = struct.unpack('<16f', mat_bytes)
+        raw_matrix = mathutils.Matrix([mat_vals[i:i+4] for i in range(0,16,4)])
+
+        children = struct.unpack('<I', file.read(4))[0]
+        _target = OVOScene._read_string(file)
+
+        light_type = struct.unpack('<B', file.read(1))[0]
+        color = struct.unpack('<3f', file.read(12))
+        radius = struct.unpack('<f', file.read(4))[0]
+        direction = struct.unpack('<3f', file.read(12))
+        cutoff = struct.unpack('<f', file.read(4))[0]
+        spot_exp = struct.unpack('<f', file.read(4))[0]
+        shadow = struct.unpack('<B', file.read(1))[0]
+        volumetric = struct.unpack('<B', file.read(1))[0]
+
+        ldata = OVOLight._create_blender_light_data(light_name, light_type, color, radius,
+                                                    cutoff, spot_exp, shadow)
+        print(f"[parse_light_raw] Light='{light_name}', children={children}, type={light_type}")
+        return light_name, raw_matrix, children, ldata
 
 # ====================================
 #  Blender Import Operator
@@ -734,14 +729,10 @@ class OT_ImportOVO(Operator, ImportHelper):
     filter_glob: StringProperty(default="*.ovo", options={'HIDDEN'})
 
     def execute(self, context):
-        """
-        @fn execute(self, context)
-        @brief Invocato quando l'utente importa un file .ovo da Blender.
-        """
         importer = OVOImporter(self.filepath)
-        res = importer.import_scene()
+        result = importer.import_scene()
         bpy.context.view_layer.update()
-        return res
+        return result
 
 
 def menu_func_import(self, context):
@@ -753,19 +744,11 @@ def menu_func_import(self, context):
 
 
 def register():
-    """
-    @fn register()
-    @brief Registra la classe OT_ImportOVO in Blender e aggiunge la voce al menu import.
-    """
     bpy.utils.register_class(OT_ImportOVO)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
 
 def unregister():
-    """
-    @fn unregister()
-    @brief Deregistra l'addon rimuovendo l'operatore dal menu import.
-    """
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.utils.unregister_class(OT_ImportOVO)
 
