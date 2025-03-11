@@ -127,12 +127,6 @@ class OVOMesh:
     """
     @staticmethod
     def _read_physics_data(file_obj):
-        """
-        @fn _read_physics_data(file_obj)
-        @brief Legge i dati fisici della mesh (tipo, hull, mass, etc.).
-        @return Un dict con tutti i campi della fisica.
-        """
-        print("    [OVOMesh._read_physics_data] Lettura dati fisici.")
         start_pos = file_obj.tell()
 
         # 1 byte: type_
@@ -141,8 +135,11 @@ class OVOMesh:
         # 1 byte: hull_type
         hull_type = struct.unpack('B', file_obj.read(1))[0]
 
-        # 2 byte: se il tuo file ha collideWithRB, contCollision.
-        file_obj.seek(2, 1)
+        # 1 byte: contCollision
+        cont_collision = struct.unpack('B', file_obj.read(1))[0]
+
+        # 1 byte: collideWithRB
+        collide_with_rb = struct.unpack('B', file_obj.read(1))[0]
 
         # 12 byte: massCenter
         mass_center = struct.unpack('<3f', file_obj.read(12))
@@ -150,8 +147,14 @@ class OVOMesh:
         # 24 byte: mass, staticFric, dynFric, bounciness, linDamp, angDamp
         mass, static_fric, dyn_fric, bounciness, lin_damp, ang_damp = struct.unpack('<6f', file_obj.read(24))
 
-        # 8 byte: nr_hulls e pad
-        nr_hulls, _pad = struct.unpack('<II', file_obj.read(8))
+        # 4 byte: nr_hulls
+        nr_hulls = struct.unpack('<I', file_obj.read(4))[0]
+
+        # 4 byte: padding
+        _pad = struct.unpack('<I', file_obj.read(4))[0]
+
+        # 8 + 8 byte: due puntatori riservati (sempre zero, ma vanno letti)
+        reserved1, reserved2 = struct.unpack('<QQ', file_obj.read(16))
 
         end_pos = file_obj.tell()
         print(f"    [OVOMesh._read_physics_data] Bytes letti: {end_pos - start_pos}")
@@ -164,7 +167,7 @@ class OVOMesh:
             "dynamicFriction": dyn_fric,
             "bounciness": bounciness,
             "linearDamping": lin_damp,
-            "angularDamping": ang_damp
+            "angularDamping": ang_damp,
         }
 
     @staticmethod
@@ -177,6 +180,11 @@ class OVOMesh:
             print(f"    [OVOMesh.apply_physics_to_object] WARNING: '{obj.name}' non è una mesh.")
             return
 
+        # Instead of checking by name in the view layer, check if the object is linked to any collection.
+        if not obj.users_collection:
+            print(f"    [OVOMesh.apply_physics_to_object] '{obj.name}' non ha collezioni, lo linko ora.")
+            bpy.context.collection.objects.link(obj)
+
         print(f"    [OVOMesh] Assegno fisica a '{obj.name}' con parametri={phys_data}")
         bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = obj
@@ -186,16 +194,13 @@ class OVOMesh:
         bpy.ops.rigidbody.object_add(type='ACTIVE')
         rb = obj.rigid_body
 
-        # Se type == 1 => ACTIVE, se type == 3 => PASSIVE, etc.
         if phys_data["type"] == 1:  # Dynamic
             rb.type = 'ACTIVE'
         elif phys_data["type"] == 3:  # Static
             rb.type = 'PASSIVE'
         else:
-            # Altri casi (2=Kinematic) => Blender non lo supporta esattamente, potresti settare ACTIVE con constraints
             rb.type = 'ACTIVE'
 
-        # Mappa hull types
         hull_map = {
             1: 'SPHERE',
             2: 'BOX',
@@ -207,13 +212,11 @@ class OVOMesh:
         rb.collision_shape = hull_map.get(phys_data["hullType"], 'BOX')
 
         rb.mass = phys_data["mass"]
-        # In Blender friction => dynamic friction
         rb.friction = phys_data["dynamicFriction"]
         rb.restitution = phys_data["bounciness"]
         rb.linear_damping = phys_data["linearDamping"]
         rb.angular_damping = phys_data["angularDamping"]
 
-        # Forza la visualizzazione come solido
         obj.display_type = 'TEXTURED'
         obj.hide_viewport = False
 
@@ -455,8 +458,10 @@ class OVOImporter:
             if cid == 1:  # NODE
                 node_name, raw_matrix, children = self.parse_node_basic_raw(chunk.data)
                 node_obj = bpy.data.objects.new(node_name, None)
-                bpy.context.collection.objects.link(node_obj)
+                bpy.context.collection.objects.link(node_obj)  # Always link every node
                 node_obj.matrix_world = mathutils.Matrix.Identity(4)
+                node_obj.empty_display_type = 'PLAIN_AXES'
+                node_obj.empty_display_size = 1.0
                 rec = NodeRecord(node_name, "NODE", children, node_obj, raw_matrix)
                 self.parsed_nodes.append(rec)
                 print(f"    [INFO] Creato NodeRecord: {rec}")
@@ -483,7 +488,10 @@ class OVOImporter:
                         else:
                             mesh_obj.data.materials[0] = mat
 
-                bpy.context.collection.objects.link(mesh_obj)
+                # MESH: Link to the active collection
+                if not bpy.context.collection.objects.get(mesh_obj.name):
+                    bpy.context.collection.objects.link(mesh_obj)
+
                 mesh_obj.matrix_world = mathutils.Matrix.Identity(4)
 
                 if phys_data:
@@ -612,78 +620,128 @@ class OVOImporter:
 
     def parse_mesh_raw(self, chunk_data):
         """
-        @fn parse_mesh_raw
+        @fn parse_mesh_raw(self, chunk_data)
         @brief Legge chunk ID=18 (MESH), inclusa la sezione fisica e LOD0 con UV.
+               Ora legge tutti i dati e solo dopo crea l'oggetto Blender e
+               applica le proprietà fisiche. Evita problemi di ordine/interpretazione.
+
+        @param chunk_data I byte del chunk relativo a una mesh.
         @return (mesh_name, raw_matrix, children_count, material_name, mesh_obj, physics_data)
         """
         file = io.BytesIO(chunk_data)
-        mesh_name = OVOScene._read_string(file)
 
+        # ---- Lettura dati base mesh ----
+        mesh_name = OVOScene._read_string(file)
+        print(f"[parse_mesh_raw] *** Inizio parsing mesh '{mesh_name}' ***")
+
+        # 4x4 matrix in row-major
         mbytes = file.read(64)
         mvals = struct.unpack('<16f', mbytes)
-        raw_matrix = mathutils.Matrix([mvals[i:i+4] for i in range(0,16,4)])
+        raw_matrix = mathutils.Matrix([mvals[i:i + 4] for i in range(0, 16, 4)])
+        print(f"[parse_mesh_raw] Matrix read (row-major, transposed in Blender successivamente):\n  {raw_matrix}")
 
         children = struct.unpack("<I", file.read(4))[0]
         _target = OVOScene._read_string(file)
+        print(f"[parse_mesh_raw] children={children}, target={_target}")
+
+        # Legge il subtype (OvMesh::Subtype)
         mesh_subtype = struct.unpack('B', file.read(1))[0]
         material_name = OVOScene._read_string(file)
+        print(f"[parse_mesh_raw] mesh_subtype={mesh_subtype}, material_name={material_name}")
 
-        print(f"[parse_mesh_raw] Mesh='{mesh_name}', children={children}, mat='{material_name}'")
+        # Leggi bounding sphere + minBox + maxBox (4 + 12 + 12 byte)
+        bsphere = struct.unpack('<f', file.read(4))[0]
+        min_box = struct.unpack('<3f', file.read(12))
+        max_box = struct.unpack('<3f', file.read(12))
+        print(f"[parse_mesh_raw] boundingSphere={bsphere}, minBox={min_box}, maxBox={max_box}")
 
-        # Salta bounding sphere + minBox + maxBox
-        file.seek(4 + 12 + 12, 1)
-
+        # Lettura dati fisica
         physics_flag = struct.unpack('B', file.read(1))[0]
         physics_data = None
         if physics_flag:
             physics_data = OVOMesh._read_physics_data(file)
+            print(f"[parse_mesh_raw] physics_data={physics_data}")
+        else:
+            print("[parse_mesh_raw] Nessun dato fisico presente.")
 
+        # Lettura LOD e geometria
         lod_count = struct.unpack('I', file.read(4))[0]
-        print(f"[parse_mesh_raw] LodCount={lod_count}")
-
+        print(f"[parse_mesh_raw] LOD count={lod_count}")
         if lod_count == 0:
-            # Creiamo un oggetto mesh vuoto
-            fallback = bpy.data.meshes.new(mesh_name)
-            obj = bpy.data.objects.new(mesh_name, fallback)
-            return mesh_name, raw_matrix, children, material_name, obj, physics_data
+            # Mesh vuota
+            fallback_mesh = bpy.data.meshes.new(mesh_name)
+            mesh_obj = bpy.data.objects.new(mesh_name, fallback_mesh)
+            print("[parse_mesh_raw] LOD=0 => Mesh vuota creata.")
+            return mesh_name, raw_matrix, children, material_name, mesh_obj, physics_data
 
         vertex_count, face_count = struct.unpack('2I', file.read(8))
-        print(f"   [parse_mesh_raw] vertex_count={vertex_count}, face_count={face_count}")
 
+        # Liste per accumulare i dati geometrici
         vertices = []
         faces = []
         uvs = []
 
-        for _ in range(vertex_count):
+        # Lettura vertici
+        for idx in range(vertex_count):
             pos = struct.unpack('<3f', file.read(12))
-            _normalData = struct.unpack('<I', file.read(4))[0]
+            normalData = struct.unpack('<I', file.read(4))[0]
             uvData = struct.unpack('<I', file.read(4))[0]
-            _tangent = file.read(4)
-
+            tangentData = file.read(4)
             vertices.append(pos)
+            # decode uv
             uv = decode_half2x16(uvData)
             uvs.append(uv)
+            # Log facoltativo su un subset di vertici per non esagerare
+            if idx < 5:
+                print(f"   [parse_mesh_raw] Vtx#{idx} => pos={pos}, normalPacked={normalData}, uv={uv}")
 
-        for _ in range(face_count):
+        # Lettura facce
+        for fidx in range(face_count):
             f = struct.unpack('<3I', file.read(12))
             faces.append(f)
+            if fidx < 5:
+                print(f"   [parse_mesh_raw] Face#{fidx} => indices={f}")
 
-        # Creiamo la mesh
+        # Creazione e popolamento Mesh Blender
         mesh_data = bpy.data.meshes.new(mesh_name)
         mesh_data.from_pydata(vertices, [], faces)
         mesh_data.update()
+        print(
+            f"[parse_mesh_raw] Creata mesh_data '{mesh_name}' con {len(mesh_data.vertices)} vertici Blender e {len(mesh_data.polygons)} poligoni Blender.")
 
-        # Se abbiamo UV
-        if len(uvs) == vertex_count:
+        # Se ci sono UV, li copiamo
+        if len(uvs) == vertex_count and vertex_count > 0:
             uv_layer = mesh_data.uv_layers.new(name="UVMap")
             for poly in mesh_data.polygons:
                 for loop_idx in range(poly.loop_start, poly.loop_start + poly.loop_total):
                     vert_idx = mesh_data.loops[loop_idx].vertex_index
                     uv_layer.data[loop_idx].uv = uvs[vert_idx]
+            print("[parse_mesh_raw] UV map 'UVMap' creato e assegnato con successo.")
 
+        # Creiamo l'oggetto Blender collegato alla mesh
         mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
-        print(f"[parse_mesh_raw] creato obj '{mesh_name}' con {vertex_count} vert e {face_count} facce.")
+        print(f"[parse_mesh_raw] mesh_obj='{mesh_obj.name}' creato.")
 
+        # Se esiste il materiale, lo assegnamo
+        if material_name in self.materials:
+            mat = self.materials[material_name].blender_material
+            if mat:
+                if not mesh_obj.data.materials:
+                    mesh_obj.data.materials.append(mat)
+                else:
+                    mesh_obj.data.materials[0] = mat
+                print(f"[parse_mesh_raw] Assegnato materiale '{mat.name}' a '{mesh_obj.name}'")
+        else:
+            print("[parse_mesh_raw] Nessun materiale da assegnare o materiale non trovato nella libreria.")
+
+        # ---- Applica i dati di fisica, se presenti ----
+        if physics_data:
+            print(f"[parse_mesh_raw] Applico i dati fisici a '{mesh_obj.name}'...")
+            OVOMesh.apply_physics_to_object(mesh_obj, physics_data)
+        else:
+            print("[parse_mesh_raw] Nessun rigid body applicato (physics_data assente).")
+
+        print(f"[parse_mesh_raw] *** Fine parsing mesh '{mesh_name}' ***\n")
         return mesh_name, raw_matrix, children, material_name, mesh_obj, physics_data
 
     def parse_light_raw(self, chunk_data):
