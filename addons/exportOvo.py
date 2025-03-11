@@ -57,6 +57,16 @@ class ChunkType:
     PHYSICS = 24
     LAST = 25
 
+class HullType:
+    HULL_UNDEFINED = 0
+    HULL_SPHERE = 1
+    HULL_BOX = 2
+    HULL_CAPSULE = 3
+    HULL_CONVEX = 4
+    HULL_ORIGINAL = 5
+    HULL_CUSTOM = 6
+    HULL_CONCAVE = 7
+    HULL_LAST = 8  # I assume this is for range checking
 class OVO_Exporter:
     def __init__(self, context, filepath, use_mesh=True, use_light=True, use_legacy_compression=True):
         self.context = context
@@ -738,13 +748,21 @@ class OVO_Exporter:
             # Collision con altri corpi rigidi
             collide_with_rbodies = 1 if obj.rigid_body.enabled else 0
 
+
+
             # Tipo di collision shape
-            hull_type = 0  # Default box
+            hull_type = HullType.HULL_BOX  # Default is box (2)
             if hasattr(obj.rigid_body, 'collision_shape'):
-                if obj.rigid_body.collision_shape == 'MESH':
-                    hull_type = 1
+                if obj.rigid_body.collision_shape == 'SPHERE':
+                    hull_type = HullType.HULL_SPHERE  # 1
+                elif obj.rigid_body.collision_shape == 'BOX':
+                    hull_type = HullType.HULL_BOX  # 2
+                elif obj.rigid_body.collision_shape == 'CAPSULE':
+                    hull_type = HullType.HULL_CAPSULE  # 3
                 elif obj.rigid_body.collision_shape == 'CONVEX_HULL':
-                    hull_type = 2
+                    hull_type = HullType.HULL_CONVEX  # 4
+                elif obj.rigid_body.collision_shape == 'MESH':
+                    hull_type = HullType.HULL_CONCAVE  # 7
 
             # Pacchetta i byte di controllo
             chunk_data += struct.pack('B', physics_type)
