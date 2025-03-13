@@ -11,11 +11,13 @@ try:
     from .ovo_packer import OVOPacker
     from .ovo_texture_manager import OVOTextureManager
     from .ovo_physics import OVOPhysicsManager
+    from .ovo_lod_manager import OVOLodManager
 except ImportError:
     # Per quando eseguito direttamente
     from ovo_types import ChunkType, HullType, GREEN, YELLOW, BLUE, BOLD, RESET, RED
     from ovo_packer import OVOPacker
     from ovo_texture_manager import OVOTextureManager
+    from ovo_lod_manager import OVOLodManager
     from ovo_physics import OVOPhysicsManager
 
 class OVO_Exporter:
@@ -349,50 +351,12 @@ class OVO_Exporter:
         bm.from_mesh(mesh)
         bmesh.ops.triangulate(bm, faces=bm.faces)
 
-        # Ensure lookup tables are updated
-        bm.verts.ensure_lookup_table()
-        bm.faces.ensure_lookup_table()
-        bm.edges.ensure_lookup_table()
-
         # Get UV layer
         uv_layer = bm.loops.layers.uv.active
         if uv_layer:
             print(f"      - UV layer found: '{mesh.uv_layers.active.name if mesh.uv_layers.active else 'default'}'")
         else:
             print("      - WARNING: No UV layer found")
-
-        # Collect UV data for vertex-face pairs
-        vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
-        vertices_data = []  # Final list of vertices
-        vertex_map = {}  # Map (vertex_idx, uv_key) -> new_vertex_idx
-
-        print("      - Analyzing mesh geometry")
-
-        # Collect UVs
-        for face in bm.faces:
-            for loop in face.loops:
-                if uv_layer:
-                    vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
-
-        # Process vertices
-        for vert in bm.verts:
-            # Find unique UVs for this vertex
-            vert_uvs = set()
-            for face in vert.link_faces:
-                if (vert.index, face.index) in vertex_face_uvs:
-                    uv = vertex_face_uvs[(vert.index, face.index)]
-                    vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
-
-            # Create a new vertex for each unique UV
-            for uv_key in vert_uvs:
-                new_idx = len(vertices_data)
-                # Transform normal here
-                transformed_normal = (vert.normal)
-                vertices_data.append((vert.co, transformed_normal, mathutils.Vector(uv_key)))
-                vertex_map[(vert.index, uv_key)] = new_idx
-
-        print(f"      - Processed {len(bm.verts)} original vertices into {len(vertices_data)} final vertices")
-        print(f"      - Faces: {len(bm.faces)}")
 
         # Calculate bounding box in world space
         bbox_corners = [final_matrix @ mathutils.Vector(corner) for corner in obj.bound_box]
@@ -412,33 +376,82 @@ class OVO_Exporter:
         # Process physics data
         print("      - Processing physics data")
         chunk_data = self.physics_manager.write_physics_data(obj, chunk_data)
+        lod_manager = OVOLodManager()
 
-        # Write LODs (1 = single LOD)
-        chunk_data += struct.pack('I', 1)
-        print("      - LOD count: 1")
+        # Check face count to determine if we need multi-LOD
+        should_multi_lod = lod_manager.should_generate_multi_lod(obj)
 
-        # Write vertex and face counts
-        chunk_data += struct.pack('I', len(vertices_data))
-        chunk_data += struct.pack('I', len(bm.faces))
+        if should_multi_lod:
+            print("      - Generating multiple LODs for high-poly mesh")
+            # Generate LOD meshes - we don't pass the UV layer reference here
+            lod_meshes = lod_manager.generate_lod_meshes(obj)
 
-        # Write vertex data
-        print(f"      - Writing {len(vertices_data)} vertices")
-        for pos, norm, uv in vertices_data:
-            chunk_data += self.packer.pack_vector3(pos)
-            # Use already transformed normal directly
-            chunk_data += self.packer.pack_normal(norm)
-            chunk_data += self.packer.pack_uv(uv)
-            chunk_data += struct.pack('I', 0)  # tangent
+            # Write LOD data
+            chunk_data = self.write_lod_data(obj, chunk_data, lod_meshes)
 
-        # Write face indices
-        print(f"      - Writing {len(bm.faces)} faces")
-        for face in bm.faces:
-            for loop in face.loops:
-                if (loop.vert.index, face.index) in vertex_face_uvs:
-                    uv = vertex_face_uvs[(loop.vert.index, face.index)]
-                    uv_key = (round(uv.x, 5), round(uv.y, 5))
-                    new_idx = vertex_map[(loop.vert.index, uv_key)]
-                    chunk_data += struct.pack('I', new_idx)
+            # Clean up LOD meshes
+            lod_manager.cleanup_lod_meshes(lod_meshes)
+        else:
+            # Original single LOD code path
+            # Write LODs (1 = single LOD)
+            chunk_data += struct.pack('I', 1)
+            print("      - LOD count: 1 (single LOD)")
+
+            # Collect UV data for vertex-face pairs
+            vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
+            vertices_data = []  # Final list of vertices
+            vertex_map = {}  # Map (vertex_idx, uv_key) -> new_vertex_idx
+
+            print("      - Analyzing mesh geometry")
+
+            # Collect UVs
+            for face in bm.faces:
+                for loop in face.loops:
+                    if uv_layer:
+                        vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
+
+            # Process vertices
+            for vert in bm.verts:
+                # Find unique UVs for this vertex
+                vert_uvs = set()
+                for face in vert.link_faces:
+                    if (vert.index, face.index) in vertex_face_uvs:
+                        uv = vertex_face_uvs[(vert.index, face.index)]
+                        vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
+
+                # Create a new vertex for each unique UV
+                for uv_key in vert_uvs:
+                    new_idx = len(vertices_data)
+                    # Transform normal here
+                    transformed_normal = (vert.normal)
+                    vertices_data.append((vert.co, transformed_normal, mathutils.Vector(uv_key)))
+                    vertex_map[(vert.index, uv_key)] = new_idx
+
+            print(f"      - Processed {len(bm.verts)} original vertices into {len(vertices_data)} final vertices")
+            print(f"      - Faces: {len(bm.faces)}")
+
+            # Write vertex and face counts
+            chunk_data += struct.pack('I', len(vertices_data))
+            chunk_data += struct.pack('I', len(bm.faces))
+
+            # Write vertex data
+            print(f"      - Writing {len(vertices_data)} vertices")
+            for pos, norm, uv in vertices_data:
+                chunk_data += self.packer.pack_vector3(pos)
+                # Use already transformed normal directly
+                chunk_data += self.packer.pack_normal(norm)
+                chunk_data += self.packer.pack_uv(uv)
+                chunk_data += struct.pack('I', 0)  # tangent
+
+            # Write face indices
+            print(f"      - Writing {len(bm.faces)} faces")
+            for face in bm.faces:
+                for loop in face.loops:
+                    if (loop.vert.index, face.index) in vertex_face_uvs:
+                        uv = vertex_face_uvs[(loop.vert.index, face.index)]
+                        uv_key = (round(uv.x, 5), round(uv.y, 5))
+                        new_idx = vertex_map[(loop.vert.index, uv_key)]
+                        chunk_data += struct.pack('I', new_idx)
 
         # Write the complete mesh chunk
         print("      - Writing mesh chunk to file")
@@ -450,6 +463,104 @@ class OVO_Exporter:
         obj_eval.to_mesh_clear()
         print(f"    [OVOExporter.write_mesh_chunk] Completed: '{obj.name}'")
 
+    def write_lod_data(self, obj, chunk_data, lod_meshes):
+        """
+        Writes LOD data to the chunk.
+
+        Args:
+            obj: Blender mesh object
+            chunk_data: Current chunk data buffer
+            lod_meshes: List of BMesh objects for each LOD
+
+        Returns:
+            bytes: Updated chunk data with LOD information
+        """
+        # Write the number of LODs
+        lod_count = len(lod_meshes)
+        chunk_data += struct.pack('I', lod_count)
+        print(f"      - LOD count: {lod_count}")
+
+        # Process each LOD level
+        for lod_index, bm in enumerate(lod_meshes):
+            print(f"      - Processing LOD {lod_index + 1}/{lod_count}")
+
+            # Collect UV data for vertex-face pairs
+            vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
+            vertices_data = []  # Final list of vertices
+            vertex_map = {}  # Map (vertex_idx, uv_key) -> new_vertex_idx
+
+            # Get the UV layer for this specific BMesh
+            uv_layer = bm.loops.layers.uv.active
+            if uv_layer:
+                # Collect UVs
+                for face in bm.faces:
+                    for loop in face.loops:
+                        try:
+                            vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
+                        except Exception as e:
+                            # If we run into an error, just use default UVs
+                            print(f"      - Warning: UV access error in LOD {lod_index + 1}: {e}")
+                            vertex_face_uvs[(loop.vert.index, face.index)] = mathutils.Vector((0.0, 0.0))
+
+            # Process vertices
+            for vert in bm.verts:
+                # Find unique UVs for this vertex
+                vert_uvs = set()
+                for face in vert.link_faces:
+                    if (vert.index, face.index) in vertex_face_uvs:
+                        uv = vertex_face_uvs[(vert.index, face.index)]
+                        vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
+
+                # If no UVs found (can happen in decimated meshes), add a default UV
+                if not vert_uvs and vert.link_faces:
+                    vert_uvs.add((0.0, 0.0))
+
+                # Create a new vertex for each unique UV
+                for uv_key in vert_uvs:
+                    new_idx = len(vertices_data)
+                    vertices_data.append((vert.co, vert.normal, mathutils.Vector(uv_key)))
+                    vertex_map[(vert.index, uv_key)] = new_idx
+
+            # Write vertex and face counts
+            chunk_data += struct.pack('I', len(vertices_data))
+            chunk_data += struct.pack('I', len(bm.faces))
+
+            print(f"      - LOD {lod_index + 1}: {len(vertices_data)} vertices, {len(bm.faces)} faces")
+
+            # Write vertex data
+            for pos, norm, uv in vertices_data:
+                chunk_data += self.packer.pack_vector3(pos)
+                chunk_data += self.packer.pack_normal(norm)
+                chunk_data += self.packer.pack_uv(uv)
+                chunk_data += struct.pack('I', 0)  # tangent
+
+            # Write face indices
+            for face in bm.faces:
+                for loop in face.loops:
+                    # Get UV for this vertex-face pair
+                    uv_key = (0.0, 0.0)  # Default in case we can't find UV
+
+                    if (loop.vert.index, face.index) in vertex_face_uvs:
+                        uv = vertex_face_uvs[(loop.vert.index, face.index)]
+                        uv_key = (round(uv.x, 5), round(uv.y, 5))
+
+                    # Get the new vertex index
+                    if (loop.vert.index, uv_key) in vertex_map:
+                        new_idx = vertex_map[(loop.vert.index, uv_key)]
+                        chunk_data += struct.pack('I', new_idx)
+                    else:
+                        # Fallback for cases where exact UV match isn't found
+                        fallback_keys = [k for k in vertex_map.keys() if k[0] == loop.vert.index]
+                        if fallback_keys:
+                            new_idx = vertex_map[fallback_keys[0]]
+                            chunk_data += struct.pack('I', new_idx)
+                        else:
+                            # This should rarely happen
+                            print(
+                                f"      - WARNING: No mapping found for vertex {loop.vert.index} in LOD {lod_index + 1}")
+                            chunk_data += struct.pack('I', 0)  # Use first vertex as fallback
+
+        return chunk_data
     def write_light_chunk(self, file, obj, num_children):
         """
         Writes a light chunk to the OVO file.

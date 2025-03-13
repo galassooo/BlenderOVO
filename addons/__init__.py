@@ -37,6 +37,7 @@ from ovo_types import ChunkType, HullType
 from ovo_packer import OVOPacker
 from ovo_texture_manager import OVOTextureManager
 from ovo_exporter_core import OVO_Exporter
+from ovo_lod_manager import OVOLodManager
 from ovo_exporter_ui import OVO_PT_export_main, menu_func_export, register, unregister
 
 
