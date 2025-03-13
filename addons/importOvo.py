@@ -132,23 +132,35 @@ class OVOMesh:
         # 1 byte: type_
         type_ = struct.unpack('B', file_obj.read(1))[0]
 
-        # 1 byte: hull_type
-        hull_type = struct.unpack('B', file_obj.read(1))[0]
+        print(f'[Object_Type] value: {type_}')
 
         # 1 byte: contCollision
         cont_collision = struct.unpack('B', file_obj.read(1))[0]
 
+        print(f'[Cont_Collision] value: {cont_collision}')
+
         # 1 byte: collideWithRB
         collide_with_rb = struct.unpack('B', file_obj.read(1))[0]
 
+        print(f'[Collide_With_RB] value: {collide_with_rb}')
+
+        # 1 byte: hull_type
+        hull_type = struct.unpack('B', file_obj.read(1))[0]
+
+        print(f'[Hull_Type] value: {hull_type}')
+
         # 12 byte: massCenter
         mass_center = struct.unpack('<3f', file_obj.read(12))
+
+        print(f'[Mass_Center] value: {mass_center}')
 
         # 24 byte: mass, staticFric, dynFric, bounciness, linDamp, angDamp
         mass, static_fric, dyn_fric, bounciness, lin_damp, ang_damp = struct.unpack('<6f', file_obj.read(24))
 
         # 4 byte: nr_hulls
         nr_hulls = struct.unpack('<I', file_obj.read(4))[0]
+
+        print(f'[Nr_Hulls] value: {nr_hulls}')
 
         # 4 byte: padding
         _pad = struct.unpack('<I', file_obj.read(4))[0]
@@ -180,7 +192,6 @@ class OVOMesh:
             print(f"    [OVOMesh.apply_physics_to_object] WARNING: '{obj.name}' non è una mesh.")
             return
 
-        # Instead of checking by name in the view layer, check if the object is linked to any collection.
         if not obj.users_collection:
             print(f"    [OVOMesh.apply_physics_to_object] '{obj.name}' non ha collezioni, lo linko ora.")
             bpy.context.collection.objects.link(obj)
@@ -205,9 +216,7 @@ class OVOMesh:
             1: 'SPHERE',
             2: 'BOX',
             3: 'CAPSULE',
-            4: 'CONVEX_HULL',
-            5: 'CONVEX_HULL',
-            7: 'MESH'
+            4: 'CONVEX_HULL'
         }
         rb.collision_shape = hull_map.get(phys_data["hullType"], 'BOX')
 
@@ -770,6 +779,13 @@ class OVOImporter:
 
         ldata = OVOLight._create_blender_light_data(light_name, light_type, color, radius,
                                                     cutoff, spot_exp, shadow)
+
+        # Compute the rotation
+        default_dir = mathutils.Vector((0, 0, -1))
+        target_dir = mathutils.Vector(direction).normalized()
+        rot_quat = default_dir.rotation_difference(target_dir)
+
+        
         print(f"[parse_light_raw] Light='{light_name}', children={children}, type={light_type}")
         return light_name, raw_matrix, children, ldata
 
