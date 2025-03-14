@@ -165,7 +165,7 @@ class OVOMesh:
         # 4 byte: padding
         _pad = struct.unpack('<I', file_obj.read(4))[0]
 
-        # 8 + 8 byte: due puntatori riservati (sempre zero, ma vanno letti)
+        # 8 + 8 byte: due puntatori riservati
         reserved1, reserved2 = struct.unpack('<QQ', file_obj.read(16))
 
         end_pos = file_obj.tell()
@@ -201,7 +201,6 @@ class OVOMesh:
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
 
-        # Aggiungiamo il rigid body come 'ACTIVE'
         bpy.ops.rigidbody.object_add(type='ACTIVE')
         rb = obj.rigid_body
 
@@ -481,9 +480,8 @@ class OVOImporter:
                 light_obj = bpy.data.objects.new(light_name, light_data)
                 bpy.context.collection.objects.link(light_obj)
                 light_obj.matrix_world = mathutils.Matrix.Identity(4)
-
-                # Crea il record
                 rec = NodeRecord(light_name, "LIGHT", children, light_obj, raw_matrix)
+
                 # Salviamo il quaternione in un attributo extra
                 rec.light_quat = light_quat
 
@@ -611,7 +609,6 @@ class OVOImporter:
                 final_mat[1][3] = loc.y
                 final_mat[2][3] = loc.z
 
-                # Assegna la matrix_basis (o matrix_world)
                 rec.blender_object.matrix_basis = final_mat
             else:
                 rec.blender_object.matrix_basis = mat
@@ -727,7 +724,7 @@ class OVOImporter:
             # decode uv
             uv = decode_half2x16(uvData)
             uvs.append(uv)
-            # Log facoltativo su un subset di vertici per non esagerare
+
             if idx < 5:
                 print(f"   [parse_mesh_raw] Vtx#{idx} => pos={pos}, normalPacked={normalData}, uv={uv}")
 
@@ -770,7 +767,7 @@ class OVOImporter:
         else:
             print("[parse_mesh_raw] Nessun materiale da assegnare o materiale non trovato nella libreria.")
 
-        # ---- Applica i dati di fisica, se presenti ----
+        # Applica i dati di fisica
         if physics_data:
             print(f"[parse_mesh_raw] Applico i dati fisici a '{mesh_obj.name}'...")
             OVOMesh.apply_physics_to_object(mesh_obj, physics_data)
