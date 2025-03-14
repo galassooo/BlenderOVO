@@ -477,11 +477,16 @@ class OVOImporter:
                 continue
 
             if cid == 16:  # LIGHT
-                light_name, raw_matrix, children, light_data = self.parse_light_raw(chunk.data)
+                light_name, raw_matrix, children, light_data, light_quat = self.parse_light_raw(chunk.data)
                 light_obj = bpy.data.objects.new(light_name, light_data)
                 bpy.context.collection.objects.link(light_obj)
                 light_obj.matrix_world = mathutils.Matrix.Identity(4)
+
+                # Crea il record
                 rec = NodeRecord(light_name, "LIGHT", children, light_obj, raw_matrix)
+                # Salviamo il quaternione in un attributo extra
+                rec.light_quat = light_quat
+
                 self.parsed_nodes.append(rec)
                 print(f"    [INFO] Creato Light NodeRecord: {rec}")
                 continue
@@ -564,20 +569,18 @@ class OVOImporter:
                 r.parent = None
 
     def apply_matrices_with_partial_rotation(self):
-        """
-        @fn apply_matrices_with_partial_rotation
-        @brief Fa la trasposizione + rotazione di 90° su X per i figli diretti di [root].
-        """
         print("[OVOImporter] apply_matrices_with_partial_rotation.")
         for rec in self.parsed_nodes:
             if rec.name == "[root]":
                 print("   - skip [root]")
                 continue
+
+            # 1) Trasponi la matrice (row-major -> column-major)
             mat = rec.raw_matrix.copy()
             mat.transpose()
 
+            # 2) Se figlio di [root], ruota di 90° su X
             if rec.parent and rec.parent.name == "[root]":
-                # Ruota di 90° su X
                 conv_90_x = mathutils.Matrix([
                     [1, 0, 0, 0],
                     [0, 0, -1, 0],
@@ -587,7 +590,31 @@ class OVOImporter:
                 mat = conv_90_x @ mat
                 print(f"   - Node '{rec.name}' => +90° su X (parent=[root])")
 
-            rec.blender_object.matrix_basis = mat
+            # 3) Se è una luce e abbiamo un quaternione, lo combiniamo
+            if rec.node_type == "LIGHT" and hasattr(rec, 'light_quat'):
+                loc, base_rot, scale = mat.decompose()
+
+                # Combina la rotazione esistente con quella calcolata dalla direzione
+                new_rot = rec.light_quat @ base_rot
+
+                # Ricostruisci la matrice con la stessa pos. e scala
+                final_mat = new_rot.to_matrix().to_4x4()
+
+                # Applica la scala
+                sx, sy, sz = scale.x, scale.y, scale.z
+                final_mat[0][0] *= sx
+                final_mat[1][1] *= sy
+                final_mat[2][2] *= sz
+
+                # Posizione
+                final_mat[0][3] = loc.x
+                final_mat[1][3] = loc.y
+                final_mat[2][3] = loc.z
+
+                # Assegna la matrix_basis (o matrix_world)
+                rec.blender_object.matrix_basis = final_mat
+            else:
+                rec.blender_object.matrix_basis = mat
 
     def print_final_hierarchy(self):
         """
@@ -754,16 +781,13 @@ class OVOImporter:
         return mesh_name, raw_matrix, children, material_name, mesh_obj, physics_data
 
     def parse_light_raw(self, chunk_data):
-        """
-        @fn parse_light_raw
-        @brief Legge chunk ID=16 (LIGHT).
-        """
         file = io.BytesIO(chunk_data)
         light_name = OVOScene._read_string(file)
 
+        # Legge la matrice row-major
         mat_bytes = file.read(64)
-        mat_vals = struct.unpack('<16f', mat_bytes)
-        raw_matrix = mathutils.Matrix([mat_vals[i:i+4] for i in range(0,16,4)])
+        mvals = struct.unpack('<16f', mat_bytes)
+        raw_matrix = mathutils.Matrix([mvals[i:i + 4] for i in range(0, 16, 4)])
 
         children = struct.unpack('<I', file.read(4))[0]
         _target = OVOScene._read_string(file)
@@ -780,14 +804,13 @@ class OVOImporter:
         ldata = OVOLight._create_blender_light_data(light_name, light_type, color, radius,
                                                     cutoff, spot_exp, shadow)
 
-        # Compute the rotation
+        # Calcola il quaternione dalla direction
         default_dir = mathutils.Vector((0, 0, -1))
         target_dir = mathutils.Vector(direction).normalized()
         rot_quat = default_dir.rotation_difference(target_dir)
 
-        
-        print(f"[parse_light_raw] Light='{light_name}', children={children}, type={light_type}")
-        return light_name, raw_matrix, children, ldata
+        print(f"[parse_light_raw] Light='{light_name}', children={children}, type={light_type}, direction={direction}")
+        return light_name, raw_matrix, children, ldata, rot_quat
 
 # ====================================
 #  Blender Import Operator
