@@ -315,6 +315,8 @@ class OVOMaterial:
         """
         mat = bpy.data.materials.new(name=self.name)
         mat.use_nodes = True
+
+        # Principled BSDF
         bsdf = None
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
@@ -324,15 +326,23 @@ class OVOMaterial:
             log_info(f"[OVOMaterial] Principled BSDF non trovato in {self.name}", indent=2, color=RED)
             self.blender_material = mat
             return mat
+
+        # Set basic properties
         bsdf.inputs["Base Color"].default_value = (*self.base_color, 1.0)
         bsdf.inputs["Roughness"].default_value = self.roughness
         bsdf.inputs["Metallic"].default_value = self.metallic
+
+        # Transparency
         if self.transparency < 1.0:
             mat.blend_method = 'BLEND'
             mat.shadow_method = 'HASHED'
             bsdf.inputs["Alpha"].default_value = self.transparency
+
+        # Emission
         if "Emission" in bsdf.inputs:
             bsdf.inputs["Emission"].default_value = (*self.emissive, 1.0)
+
+        # Albedo map
         albedo_tex = self.textures.get("albedo")
         if albedo_tex and albedo_tex != "[none]":
             texture_path = os.path.join(texdir, albedo_tex)
@@ -347,6 +357,60 @@ class OVOMaterial:
                     log_info(f"[OVOMaterial] Errore caricando '{texture_path}': {ex}", indent=2, color=RED)
             else:
                 log_info(f"[OVOMaterial] Texture '{albedo_tex}' non trovata in {texdir}", indent=2, color=RED)
+
+        # Normal map
+        normal_tex = self.textures.get("normal")
+        if normal_tex:
+            normal_path = os.path.join(texdir, normal_tex)
+            if os.path.isfile(normal_path):
+                normal_img = bpy.data.images.load(normal_path)
+                normal_tex_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
+                normal_tex_node.image = normal_img
+                normal_tex_node.label = "Normal Map"
+                # Normal maps must be Non-Color
+                normal_tex_node.color_space = 'NONE'
+
+                # Create a Normal Map node
+                normal_map_node = mat.node_tree.nodes.new('ShaderNodeNormalMap')
+                normal_map_node.label = "Normal Map Converter"
+
+                # Link normal texture → Normal Map node → Principled BSDF
+                mat.node_tree.links.new(
+                    normal_tex_node.outputs["Color"],
+                    normal_map_node.inputs["Color"]
+                )
+                mat.node_tree.links.new(
+                    normal_map_node.outputs["Normal"],
+                    bsdf.inputs["Normal"]
+                )
+
+        # --- Roughness map node ---
+        rough_tex = self.textures.get("roughness")
+        if rough_tex:
+            rough_path = os.path.join(texdir, rough_tex)
+            if os.path.isfile(rough_path):
+                rough_img = bpy.data.images.load(rough_path)
+                rough_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
+                rough_node.image = rough_img
+                rough_node.label = "Roughness Texture"
+                rough_node.color_space = 'NONE'  # Usually Non-Color
+                # Connect color → Roughness input
+                mat.node_tree.links.new(rough_node.outputs["Color"], bsdf.inputs["Roughness"])
+
+        # --- Metallic map node ---
+        metal_tex = self.textures.get("metalness")
+        if metal_tex:
+            metal_path = os.path.join(texdir, metal_tex)
+            if os.path.isfile(metal_path):
+                metal_img = bpy.data.images.load(metal_path)
+                metal_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
+                metal_node.image = metal_img
+                metal_node.label = "Metallic Texture"
+                metal_node.color_space = 'NONE'
+                # Connect color → Metallic input
+                mat.node_tree.links.new(metal_node.outputs["Color"], bsdf.inputs["Metallic"])
+
+        # Save reference
         self.blender_material = mat
         return mat
 
