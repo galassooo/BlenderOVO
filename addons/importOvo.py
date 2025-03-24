@@ -393,7 +393,7 @@ class OVOMaterial:
                 rough_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
                 rough_node.image = rough_img
                 rough_node.label = "Roughness Texture"
-                rough_node.color_space = 'NONE'  # Usually Non-Color
+                rough_node.image.colorspace_settings.name = "Non-Color"
                 # Connect color → Roughness input
                 mat.node_tree.links.new(rough_node.outputs["Color"], bsdf.inputs["Roughness"])
 
@@ -406,7 +406,7 @@ class OVOMaterial:
                 metal_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
                 metal_node.image = metal_img
                 metal_node.label = "Metallic Texture"
-                metal_node.color_space = 'NONE'
+                metal_node.image.colorspace_settings.name = "Non-Color"
                 # Connect color → Metallic input
                 mat.node_tree.links.new(metal_node.outputs["Color"], bsdf.inputs["Metallic"])
 
