@@ -368,7 +368,7 @@ class OVOMaterial:
                 normal_tex_node.image = normal_img
                 normal_tex_node.label = "Normal Map"
                 # Normal maps must be Non-Color
-                normal_tex_node.color_space = 'NONE'
+                normal_tex_node.image.colorspace_settings.name = 'Non-Color'
 
                 # Create a Normal Map node
                 normal_map_node = mat.node_tree.nodes.new('ShaderNodeNormalMap')
