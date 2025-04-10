@@ -15,7 +15,7 @@
 import bpy
 import mathutils
 
-from .ovo_types import HullType
+from .ovo_types import HullType, LightType
 
 
 class OVOSceneBuilder:
@@ -334,24 +334,40 @@ class OVOSceneBuilder:
     def _apply_transformations(self):
         """
         Finalizes the scene by applying the correct object transformations.
-
         For each NodeRecord:
-          1) Convert the raw matrix (row-major) to Blender's column-major format.
-          2) If the object's parent is the fake "[root]", apply an additional +90° rotation around X.
-          3) If the node is a LIGHT and has a custom orientation (e.g., a precomputed quaternion),
-             apply that adjustment.
+          - Converts the raw_matrix (a list of tuples, row-major) to a mathutils.Matrix.
+          - Transposes it to obtain Blender's column-major matrix.
+          - If the object is parented to a "[root]" object, an extra rotation may be applied.
+          - For LIGHT nodes, a quaternion correction is applied based on the light’s parsed direction.
+            (This replicates the old importer behavior.)
+          - For all other node types, the matrix is applied as is.
         """
+
+        # A simple local logger (you may later move this to your utils module).
+        def log_info(message, indent=0):
+            prefix = "  " * indent
+            print(f"{prefix}{message}")
+
+        log_info("[OVOImporter] Applying transformations.")
+
         for rec in self.node_records:
+            # Skip the fake root node.
             if rec.name == "[root]":
+                log_info("Skipping [root] node.", indent=1)
                 continue
 
-            obj = self.record_to_object[rec]
-            # Convert the list-of-tuples raw_matrix to a mathutils.Matrix.
-            mat4 = mathutils.Matrix(rec.raw_matrix)
-            # Transpose to change from row-major (file) to column-major (Blender).
-            mat4.transpose()
+            # Retrieve the Blender object from the mapping.
+            obj = self.record_to_object.get(rec)
+            if not obj:
+                log_info(f"Node '{rec.name}' has no associated Blender object. Skipping.", indent=1)
+                continue
 
-            # Apply additional rotation if parent is "[root]".
+            # Convert the raw matrix (list of 4-tuples) to a mathutils.Matrix and transpose.
+            mat = mathutils.Matrix(rec.raw_matrix)
+            mat.transpose()  # now mat is in Blender's column-major format
+
+            # (Optional) Apply an extra +90° rotation for nodes parented to [root]
+            # Uncomment or adjust as needed for your scene.
             if obj.parent and obj.parent.name == "[root]":
                 conv_90_x = mathutils.Matrix([
                     [1, 0, 0, 0],
@@ -359,10 +375,51 @@ class OVOSceneBuilder:
                     [0, 1, 0, 0],
                     [0, 0, 0, 1]
                 ])
-                mat4 = conv_90_x @ mat4
-                print(f"[OVOSceneBuilder] Applying +90° X rotation to node '{rec.name}' due to [root] parenting.")
+                mat = conv_90_x @ mat
+                log_info(f"Extra +90° X rotation applied to '{rec.name}' because parent is [root].", indent=1)
 
-            # Additional handling for lights if needed can be added here.
+            # Special handling for light nodes:
+            if rec.node_type == "LIGHT":
+                # If the light type is DIRECTIONAL (or if you want to apply this to all lights),
+                # ensure that the light quaternion is computed.
+                if rec.light_type == LightType.DIRECTIONAL:
+                    # If not already set, compute it using the old logic.
+                    if rec.light_quat is None:
+                        # Use (0, 0, -1) as the default light direction.
+                        default_dir = mathutils.Vector((0, 0, -1))
+                        # rec.direction is expected to be a 3-tuple from the file.
+                        target_dir = mathutils.Vector(rec.direction).normalized()
+                        rec.light_quat = default_dir.rotation_difference(target_dir)
+                        log_info(f"Computed light_quat for '{rec.name}' from direction {rec.direction}.", indent=2)
+                # If a quaternion correction exists, apply it.
+                if rec.light_quat:
+                    # Decompose the matrix into location, rotation, and scale.
+                    loc, base_rot, scale = mat.decompose()
+                    log_info(f"Light '{rec.name}' decomposition:", indent=1)
+                    log_info(f"  Location = {loc}", indent=2)
+                    log_info(f"  Base rotation (Euler) = {base_rot.to_euler('XYZ')}", indent=2)
+                    log_info(f"  Scale = {scale}", indent=2)
 
-            # Apply the final matrix as the object's basis transformation.
-            obj.matrix_basis = mat4
+                    # Compute the corrected rotation by multiplying the light quaternion (from file)
+                    # on the left of the base rotation, as in the old implementation.
+                    corrected_rot = rec.light_quat @ base_rot
+                    log_info(f"Corrected rotation (Euler) = {corrected_rot.to_euler('XYZ')}", indent=2)
+
+                    # Reconstruct the final transformation matrix.
+                    final_mat = corrected_rot.to_matrix().to_4x4()
+                    # Reapply scale.
+                    final_mat[0][0] *= scale.x
+                    final_mat[1][1] *= scale.y
+                    final_mat[2][2] *= scale.z
+                    # Set the translation.
+                    final_mat[0][3] = loc.x
+                    final_mat[1][3] = loc.y
+                    final_mat[2][3] = loc.z
+
+                    obj.matrix_basis = final_mat
+                    log_info(f"Final transformation for light '{rec.name}' applied: {final_mat.to_euler('XYZ')}",
+                             indent=1)
+                    continue  # skip applying the non-light matrix below
+
+            # For non-light nodes, apply the computed matrix.
+            obj.matrix_basis = mat

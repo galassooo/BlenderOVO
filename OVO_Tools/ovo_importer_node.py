@@ -131,6 +131,7 @@ class NodeRecord:
         self.spot_exponent = 0.0
         self.shadow = 0
         self.volumetric = 0
+        self.light_quat = None
 
     def __repr__(self):
         return f"NodeRecord(name={self.name}, type={self.node_type}, children_count={self.children_count})"

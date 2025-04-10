@@ -14,6 +14,7 @@
 import os
 import io
 import struct
+import mathutils
 
 # --------------------------------------------------------
 # IMPORTER IMPORTS
@@ -226,6 +227,13 @@ class OVOImporterParser:
         rec.spot_exponent = spot_exp
         rec.shadow = shadow
         rec.volumetric = volumetric
+
+        # *** NEW: Compute the light quaternion as in the old implementation ***
+        # Use (0, 0, -1) as the default (Blender’s forward for directional lights)
+        default_dir = mathutils.Vector((0, 0, -1))
+        target_dir = mathutils.Vector(direction).normalized()
+        rec.light_quat = default_dir.rotation_difference(target_dir)
+
         return rec
 
     def _parse_mesh(self, data: bytes) -> NodeRecord:
