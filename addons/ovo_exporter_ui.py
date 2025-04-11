@@ -77,24 +77,3 @@ class OVO_PT_export_main(Operator, ExportHelper):
             import traceback
             self.report({'ERROR'}, f"Export failed: {str(e)}")
             return {'CANCELLED'}
-
-def menu_func_export(self, context):
-    #define export menu item
-    self.layout.operator(OVO_PT_export_main.bl_idname, text="OverView Object (.ovo)")
-
-def register():
-    try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
-        print("Operator già registrato, deregistrato prima di una nuova registrazione.")
-    except RuntimeError:
-        print("Operator non era registrato, procedo normalmente.")
-
-    bpy.utils.register_class(OVO_PT_export_main)
-    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-
-def unregister():
-    try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
-        bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
-    except RuntimeError:
-        print("Operator non era registrato, skipping unregister.")

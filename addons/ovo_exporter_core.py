@@ -596,24 +596,18 @@ class OVO_Exporter:
         final_matrix = mathutils.Matrix.Identity(4)
 
         # Get position and apply it to the matrix
+        # Matrix conversion
         if obj.parent:
-            parent_pos = obj.parent.matrix_world.translation
-            obj_pos = obj.matrix_world.translation
-            final_pos = obj_pos - parent_pos
+            local_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
             print(f"      - Has parent: '{obj.parent.name}'")
         else:
-            print("      - No parent (root light)")
-            pos = obj.matrix_world.translation
-            # Convert only the position
+            print("      - No parent (root object)")
+            matrix = obj.matrix_world.copy()
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            final_pos = (conversion @ mathutils.Vector((pos.x, pos.y, pos.z, 1.0))).xyz
+            local_matrix = conversion @ matrix
 
-        # Set only the translation column
-        final_matrix[0][3] = final_pos.x
-        final_matrix[1][3] = final_pos.y
-        final_matrix[2][3] = final_pos.z
-        print(f"      - Position: ({final_pos.x:.3f}, {final_pos.y:.3f}, {final_pos.z:.3f})")
-
+        # Save matrix without additional conversions
+        final_matrix = local_matrix
         chunk_data += self.packer.pack_matrix(final_matrix)
 
         # Number of children
