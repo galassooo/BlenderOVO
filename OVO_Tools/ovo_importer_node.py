@@ -13,6 +13,7 @@
 # These classes hold only the data parsed from the file and do not interact
 # directly with Blender's API; they are later used by the scene builder to
 # create actual Blender objects.
+# ================================================================
 
 class OVOMaterial:
     """
@@ -37,7 +38,6 @@ class OVOMaterial:
         self.transparency = transparency
         self.emissive = emissive
         self.textures = textures
-        # In the importer, we do not create a Blender material here.
         self.blender_material = None
 
 

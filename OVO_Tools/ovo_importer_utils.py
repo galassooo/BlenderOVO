@@ -9,6 +9,7 @@
 #
 # These functions do not depend on Blender and help keep the main parser
 # code clean and modular.
+# ================================================================
 
 import struct
 

@@ -8,6 +8,7 @@
 #
 # It also provides a menu function to add this operator to the
 # File → Import menu.
+# ================================================================
 
 import bpy
 from bpy_extras.io_utils import ImportHelper

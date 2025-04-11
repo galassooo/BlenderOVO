@@ -6,7 +6,7 @@
 #   2) Instantiates the scene builder (OVOSceneBuilder) to construct the
 #      Blender scene based on the parsed data.
 #   3) Orchestrates the overall process and returns a status to Blender.
-# --------------------------------------------------------
+# ================================================================
 
 import os
 

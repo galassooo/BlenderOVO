@@ -9,7 +9,7 @@
 #
 # All low-level utilities (e.g. half-float decoding and null-terminated string reading)
 # are imported from the utility module.
-# --------------------------------------------------------
+# ================================================================
 
 import os
 import io
@@ -228,8 +228,8 @@ class OVOImporterParser:
         rec.shadow = shadow
         rec.volumetric = volumetric
 
-        # *** NEW: Compute the light quaternion as in the old implementation ***
-        # Use (0, 0, -1) as the default (Blender’s forward for directional lights)
+        # Compute the light quaternion
+        # (0, 0, -1) as the default (Blender’s forward for directional lights)
         default_dir = mathutils.Vector((0, 0, -1))
         target_dir = mathutils.Vector(direction).normalized()
         rec.light_quat = default_dir.rotation_difference(target_dir)
