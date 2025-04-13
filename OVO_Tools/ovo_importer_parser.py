@@ -160,7 +160,7 @@ class OVOImporterParser:
 
     def _parse_node(self, data: bytes) -> NodeRecord:
         """
-        Parses a generic NODE chunk (ChunkType.NODE, typically ID=1).
+        Parses a generic NODE chunk (ChunkType.NODE, ID=1).
 
         Expected data:
           - Node name (null-terminated string)
@@ -183,7 +183,7 @@ class OVOImporterParser:
 
     def _parse_light(self, data: bytes) -> NodeRecord:
         """
-        Parses a LIGHT chunk (ChunkType.LIGHT, typically ID=16).
+        Parses a LIGHT chunk (ChunkType.LIGHT, ID=16).
 
         Expected data:
           - Light name (null-terminated string)
@@ -238,7 +238,7 @@ class OVOImporterParser:
 
     def _parse_mesh(self, data: bytes) -> NodeRecord:
         """
-        Parses a MESH chunk (ChunkType.MESH, typically ID=18).
+        Parses a MESH chunk (ChunkType.MESH, ID=18).
 
         Expected data:
           - Mesh name (null-terminated string)
