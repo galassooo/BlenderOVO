@@ -12,7 +12,7 @@
 
 import bpy
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty
+from bpy.props import StringProperty, BoolProperty
 from bpy.types import Operator
 
 # If running as an addon (with relative imports), it will import via .ovo_importer_core;
@@ -31,6 +31,12 @@ class OT_ImportOVO(Operator, ImportHelper):
     filename_ext = ".ovo"
     filter_glob: StringProperty(default="*.ovo", options={'HIDDEN'})
 
+    flip_textures: BoolProperty(
+        name="Flip Textures",
+        description="Flip textures vertically during import",
+        default=True
+    )
+
     def execute(self, context):
         """
         Execute the operator:
@@ -39,7 +45,12 @@ class OT_ImportOVO(Operator, ImportHelper):
           3. Update the scene view and return 'FINISHED' (or 'CANCELLED' on error).
         """
         importer = OVOImporter(self.filepath)
+
+        # Pass the flag for the textures
+        importer.flip_textures = self.flip_textures
+
         result = importer.import_scene()
+
         # Ensure the view layer is updated so the imported objects show up.
         bpy.context.view_layer.update()
         return result

@@ -47,6 +47,14 @@ except ImportError:
     from ovo_importer_ui import OT_ImportOVO, menu_func_import_importer
 
 # --------------------------------------------------------
+# IMPORT THE TEXTURE FLIPPER OPERATOR
+# --------------------------------------------------------
+try:
+    from .texture_flipper_operator import TextureFlipperOperator, register as register_flipper, unregister as unregister_flipper
+except ImportError:
+    from texture_flipper_operator import TextureFlipperOperator, register as register_flipper, unregister as unregister_flipper
+
+# --------------------------------------------------------
 # MENU FUNCTIONS
 # --------------------------------------------------------
 def menu_func_export(self, context):
@@ -82,6 +90,10 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import_importer)
     print("OVO Importer registered successfully.")
 
+    # === Flipper Operator ===
+    register_flipper()
+    print("TextureFlipperOperator registered successfully.")
+
 
 def unregister():
     """
@@ -103,6 +115,9 @@ def unregister():
         print("OVO Importer unregistered successfully.")
     except RuntimeError:
         print("OVO Importer wasn't registered, skipping unregister.")
+
+    # === Flipper Operator ===
+    unregister_flipper()
 
 
 if __name__ == "__main__":

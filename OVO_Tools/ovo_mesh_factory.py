@@ -21,7 +21,7 @@ class MeshFactory:
     """
 
     @staticmethod
-    def create(rec, materials, texture_directory):
+    def create(rec, materials, texture_directory, flip_textures=True):
         # Create mesh data.
         if not rec.vertices:
             mesh_data = bpy.data.meshes.new(rec.name)
@@ -44,7 +44,7 @@ class MeshFactory:
         # Assign material if available.
         if rec.material_name and rec.material_name in materials:
             ovo_mat = materials[rec.material_name]
-            mat = MaterialFactory.create(ovo_mat, texture_directory)
+            mat = MaterialFactory.create(ovo_mat, texture_directory, flip_textures=flip_textures)
             if not mesh_obj.data.materials:
                 mesh_obj.data.materials.append(mat)
             else:

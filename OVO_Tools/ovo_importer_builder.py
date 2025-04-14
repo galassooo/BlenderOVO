@@ -32,7 +32,7 @@ class OVOSceneBuilder:
         record_to_object (dict): Maps each NodeRecord to its created Blender object.
     """
 
-    def __init__(self, node_records, materials, texture_directory):
+    def __init__(self, node_records, materials, texture_directory, flip_textures=True):
         """
         Initialize with parsed data.
 
@@ -43,6 +43,7 @@ class OVOSceneBuilder:
         self.node_records = node_records
         self.materials = materials
         self.texture_directory = texture_directory
+        self.flip_textures = flip_textures
         self.record_to_object = {}
 
     def build_scene(self):
@@ -58,7 +59,7 @@ class OVOSceneBuilder:
         # Create a Blender object for each node record using factories.
         for rec in self.node_records:
             if rec.node_type == "MESH":
-                obj = MeshFactory.create(rec, self.materials, self.texture_directory)
+                obj = MeshFactory.create(rec, self.materials, self.texture_directory, flip_textures=self.flip_textures)
             elif rec.node_type == "LIGHT":
                 obj = LightFactory.create(rec)
             else:

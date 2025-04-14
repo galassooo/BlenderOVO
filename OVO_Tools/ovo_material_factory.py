@@ -9,8 +9,6 @@
 import os
 import bpy
 
-from .ovo_importer_utils import create_flipped_image
-
 
 class MaterialFactory:
     """
@@ -21,7 +19,7 @@ class MaterialFactory:
     """
 
     @staticmethod
-    def create(ovo_material, texture_directory):
+    def create(ovo_material, texture_directory, flip_textures=True):
         mat = bpy.data.materials.new(name=ovo_material.name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
@@ -55,10 +53,14 @@ class MaterialFactory:
                     try:
                         # Load the image.
                         img = bpy.data.images.load(tex_path)
-                        # Create a flipped copy of the image.
-                        flipped_img = create_flipped_image(img)
+
+                        # Check if flipping is enabled.
+                        if flip_textures:
+                            img["flip_required"] = True
+                            img["flipped"] = False
+
                         tex_node = nodes.new('ShaderNodeTexImage')
-                        tex_node.image = flipped_img
+                        tex_node.image = img
                         tex_node.label = node_label if node_label else f"{tex_key.capitalize()} Texture"
                         if set_non_color:
                             tex_node.image.colorspace_settings.name = 'Non-Color'

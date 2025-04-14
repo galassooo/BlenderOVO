@@ -13,6 +13,7 @@
 # ================================================================
 
 import struct
+import bpy
 import numpy as np
 
 
@@ -77,47 +78,3 @@ def read_null_terminated_string(file_obj) -> str:
             break
         chars.append(c)
     return b''.join(chars).decode('utf-8', errors='replace')
-
-
-import bpy, numpy as np
-
-
-def create_flipped_image(image):
-    """
-    Create and return a flipped copy of the given image.
-    The copy will contain the vertically flipped pixel data.
-
-    :param image: The original bpy.types.Image instance.
-    :return: A new bpy.types.Image instance with pixels flipped vertically.
-    """
-    try:
-        width, height = image.size
-        channels = image.channels  # Use the actual channel count (commonly 4 for RGBA)
-        total = width * height * channels
-
-        # Create a Python list and retrieve pixels using foreach_get
-        pixels = [0.0] * total
-        image.pixels.foreach_get(pixels)
-
-        # Convert to NumPy array and reshape to a 3D array (height, width, channels)
-        arr = np.array(pixels, dtype=np.float32).reshape((height, width, channels))
-
-        # Flip the array vertically
-        arr = np.flipud(arr)
-
-        # Create a new image to hold the flipped pixel data;
-        # give it a distinct name (or append a suffix)
-        new_image_name = image.name + "_flipped"
-        new_image = bpy.data.images.new(new_image_name, width, height, alpha=(channels == 4))
-
-        # Write the flipped pixel data back into the new image
-        new_image.pixels.foreach_set(arr.flatten().tolist())
-        new_image.update()
-
-        # Optionally, store a custom property to mark it as already flipped
-        new_image["flipped"] = True
-
-        return new_image
-    except Exception as e:
-        print(f"[create_flipped_image] Error flipping image '{image.name}': {e}")
-        return image

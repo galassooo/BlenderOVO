@@ -9,6 +9,7 @@
 # ================================================================
 
 import os
+import bpy
 
 # Attempt to import from relative paths if running as an addon.
 try:
@@ -36,6 +37,9 @@ class OVOImporter:
         :param filepath: Full file path to the .ovo file.
         """
         self.filepath = filepath
+
+        # Set True by default and overridden by the UI operator
+        self.flip_textures = True
 
     def import_scene(self):
         """
@@ -67,7 +71,11 @@ class OVOImporter:
             materials=parser.materials,
             texture_directory=texture_dir
         )
+
         builder.build_scene()
+
+        if self.flip_textures:
+            bpy.ops.wm.texture_flipper('INVOKE_DEFAULT')
 
         print("[OVOImporter] Import completed successfully.")
         return {'FINISHED'}
