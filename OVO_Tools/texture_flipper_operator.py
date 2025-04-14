@@ -105,8 +105,8 @@ class TextureFlipperOperator(bpy.types.Operator):
         self._index = 0
 
         wm = context.window_manager
-        # Aumentiamo un po’ il time_step (es. 0.5) per dare più respiro alla UI
-        self._timer = wm.event_timer_add(time_step=0.5, window=context.window)
+
+        self._timer = wm.event_timer_add(time_step=1, window=context.window)
         wm.modal_handler_add(self)
 
         print("[TextureFlipper] Starting batch processing of textures.")
