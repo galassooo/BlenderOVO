@@ -4,13 +4,17 @@
 # This module provides pure utility functions that are used by
 # the importer. It includes:
 #   - half_to_float: Converts a 16-bit half-precision float to a Python float.
-#   - decode_half2x16: Extracts two 16-bit half-floats (typically for UV data)
+#   - decode_half2x16: Extracts two 16-bit half-floats (for UV data).
 #   - read_null_terminated_string: Reads a C-style string from a binary file.
+#   - flip_image_vertically: flips the image vertically.
 #
 # These functions do not depend on Blender and help keep the main parser
 # code clean and modular.
+# ================================================================
 
 import struct
+import bpy
+import numpy as np
 
 
 def half_to_float(h: int) -> float:

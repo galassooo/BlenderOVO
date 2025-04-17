@@ -6,9 +6,10 @@
 #   2) Instantiates the scene builder (OVOSceneBuilder) to construct the
 #      Blender scene based on the parsed data.
 #   3) Orchestrates the overall process and returns a status to Blender.
-# --------------------------------------------------------
+# ================================================================
 
 import os
+import bpy
 
 # Attempt to import from relative paths if running as an addon.
 try:
@@ -36,6 +37,9 @@ class OVOImporter:
         :param filepath: Full file path to the .ovo file.
         """
         self.filepath = filepath
+
+        # Set True by default and overridden by the UI operator
+        self.flip_textures = True
 
     def import_scene(self):
         """
@@ -65,9 +69,14 @@ class OVOImporter:
         builder = OVOSceneBuilder(
             node_records=parser.node_records,
             materials=parser.materials,
-            texture_directory=texture_dir
+            texture_directory=texture_dir,
+            flip_textures=self.flip_textures  # Pass the flip_textures flag to the builder
         )
+
         builder.build_scene()
+
+        # Texture flipping is now handled by the MaterialFactory directly,
+        # so we don't need to call an external operator
 
         print("[OVOImporter] Import completed successfully.")
         return {'FINISHED'}

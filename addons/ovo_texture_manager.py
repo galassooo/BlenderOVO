@@ -5,14 +5,22 @@ import numpy as np
 import shutil
 from pathlib import Path
 
+# Importa il flipper di texture
+try:
+    # Per quando eseguito come addon
+    from .ovo_texture_flipper import OVOTextureFlipper
+except ImportError:
+    # Per quando eseguito direttamente
+    from ovo_texture_flipper import OVOTextureFlipper
+
 
 class OVOTextureManager:
     """
     Class that manages texture operations for the OVO format.
-    Handles compression, conversion and texture tracking.
+    Handles compression, conversion, flipping, and texture tracking.
     """
 
-    def __init__(self, export_path, use_legacy_compression=True):
+    def __init__(self, export_path, use_legacy_compression=True, flip_textures=True):
         """
         Initializes the texture manager.
 
@@ -20,11 +28,21 @@ class OVOTextureManager:
             export_path (str): Path of the output OVO file
             use_legacy_compression (bool): If True, uses S3TC compression (DXT1/DXT5),
                                            otherwise uses BPTC (BC7)
+            flip_textures (bool): If True, flips textures vertically during export
         """
         self.export_directory = os.path.dirname(export_path)
         self.use_legacy_compression = use_legacy_compression
+        self.flip_textures = flip_textures
         self.addon_directory = os.path.dirname(os.path.abspath(__file__))
         self.processed_textures = {}  # Cache of already processed textures
+
+        # Create export directory if it doesn't exist
+        if not os.path.exists(self.export_directory):
+            try:
+                os.makedirs(self.export_directory)
+                print(f"    [OVOTextureManager] Created export directory: {self.export_directory}")
+            except Exception as e:
+                print(f"    [OVOTextureManager] WARNING: Could not create export directory: {str(e)}")
 
     def copy_texture_without_compression(self, input_path, output_name=None):
         """
@@ -48,6 +66,17 @@ class OVOTextureManager:
             # Copy the texture
             shutil.copy2(input_path, output_path)
             print(f"    [OVOTextureManager] Texture copied without compression: '{output_name}'")
+
+            # If flipping is enabled and it's a DDS file, try to flip it
+            if self.flip_textures and output_path.lower().endswith('.dds'):
+                if OVOTextureFlipper.is_dds_file(output_path):
+                    try:
+                        flipped_path = output_path  # Flip in place
+                        OVOTextureFlipper.flip_dds_texture(output_path, flipped_path)
+                        print(f"    [OVOTextureManager] Texture flipped in place: '{output_name}'")
+                    except Exception as e:
+                        print(f"    [OVOTextureManager] WARNING: Failed to flip texture: {str(e)}")
+
             return output_name
         except Exception as e:
             print(f"    [OVOTextureManager] ERROR: Failed to copy texture: {str(e)}")
@@ -65,6 +94,11 @@ class OVOTextureManager:
         Returns:
             tuple: (bool, str) Indicates if compression was successful and the path of the compressed file
         """
+        # Verify input path exists
+        if not os.path.exists(input_path):
+            print(f"    [OVOTextureManager] ERROR: Input texture does not exist: '{input_path}'")
+            return False, None
+
         # Check if the texture has already been processed
         if input_path in self.processed_textures:
             print(f"    [OVOTextureManager] Using cached texture: '{self.processed_textures[input_path]}'")
@@ -77,47 +111,57 @@ class OVOTextureManager:
         print(f"      - Target: '{os.path.basename(output_path)}'")
         print(f"      - Type: {'Albedo' if isAlbedo else 'Non-Albedo'}")
         print(f"      - Using legacy compression: {self.use_legacy_compression}")
+        print(f"      - Flip textures: {self.flip_textures}")
 
         # Determine operating system
         system = platform.system()
 
         # Determine format based on use_legacy_compression flag and texture type
-        if isAlbedo:
-            try:
-                # Load image as binary bytes array
-                with open(input_path, 'rb') as f:
-                    binary_data = f.read()
+        format = "dxt1"  # Default format
+        try:
+            # Try to determine texture format based on content
+            if isAlbedo:
+                # Try to analyze image content
+                try:
+                    # Load image as binary bytes array
+                    with open(input_path, 'rb') as f:
+                        binary_data = f.read()
 
-                # Convert to a NumPy array of uint8
-                binary_array = np.frombuffer(binary_data, dtype=np.uint8)
+                    # Convert to a NumPy array of uint8
+                    binary_array = np.frombuffer(binary_data, dtype=np.uint8)
 
-                # Assume it's an RGBA image
-                if len(binary_array) % 4 == 0:
-                    # Reshape assuming RGBA
-                    pixel_count = len(binary_array) // 4
-                    arr = binary_array.reshape(pixel_count, 4)
+                    # Assume it's an RGBA image
+                    if len(binary_array) % 4 == 0:
+                        # Reshape assuming RGBA
+                        pixel_count = len(binary_array) // 4
+                        arr = binary_array.reshape(pixel_count, 4)
 
-                    def has_alpha_channel(arr):
-                        """Checks if the image has a significant alpha channel."""
-                        alpha_channel = arr[:, 3]
-                        return not np.all(alpha_channel == 255)
+                        def has_alpha_channel(arr):
+                            """Checks if the image has a significant alpha channel."""
+                            alpha_channel = arr[:, 3]
+                            return not np.all(alpha_channel == 255)
 
-                    # Choose format based on compression type and alpha presence
-                    if self.use_legacy_compression:
-                        format = "dxt5" if has_alpha_channel(arr) else "dxt1"
-                        print(f"      - Alpha channel detected: {has_alpha_channel(arr)}")
+                        # Choose format based on compression type and alpha presence
+                        if self.use_legacy_compression:
+                            format = "dxt5" if has_alpha_channel(arr) else "dxt1"
+                            print(f"      - Alpha channel detected: {has_alpha_channel(arr)}")
+                        else:
+                            format = "bc7"  # BC7 handles both with and without alpha
                     else:
-                        format = "bc7"  # BC7 handles both with and without alpha
-                else:
-                    # Otherwise fallback to format without alpha
-                    format = "dxt1" if self.use_legacy_compression else "bc7"
+                        # Otherwise fallback to format without alpha
+                        format = "dxt1" if self.use_legacy_compression else "bc7"
 
-            except Exception as e:
-                print(f"    [OVOTextureManager] ERROR: Image analysis failed: {str(e)}")
-                return False, None
-        else:
-            # For normal maps or other special textures
-            format = "bc5"  # BC5 for normal maps
+                except Exception as e:
+                    print(f"    [OVOTextureManager] WARNING: Image analysis failed: {str(e)}")
+                    print(
+                        f"      - Using default format for albedo: {'dxt1' if self.use_legacy_compression else 'bc7'}")
+                    format = "dxt1" if self.use_legacy_compression else "bc7"
+            else:
+                # For normal maps or other special textures
+                format = "bc5"  # BC5 for normal maps
+        except Exception as e:
+            print(f"    [OVOTextureManager] WARNING: Format detection failed: {str(e)}")
+            print(f"      - Using fallback format: dxt1")
 
         print(f"      - Selected format: {format.upper()}")
 
@@ -125,13 +169,37 @@ class OVOTextureManager:
         result = self._compress_texture_for_platform(system, input_path, output_path, format)
 
         if result[0]:
+            compressed_path = result[1]
+
+            # Se richiesto, flippa la texture
+            if self.flip_textures:
+                print(f"      - Flipping texture vertically")
+                try:
+                    # IMPORTANTE: Usa lo stesso path per sovrascrivere il file originale
+                    flipped_path = OVOTextureFlipper.flip_dds_texture(compressed_path, compressed_path)
+                    print(f"      - Texture flipped successfully")
+                except Exception as e:
+                    print(f"      - WARNING: Failed to flip texture: {str(e)}")
+                    print(f"      - Original unflipped texture will be used")
+
             # Add to cache
-            self.processed_textures[input_path] = result[1]
-            print(f"    [OVOTextureManager] Compression successful: '{os.path.basename(result[1])}'")
+            self.processed_textures[input_path] = compressed_path
+            print(f"    [OVOTextureManager] Compression successful: '{os.path.basename(compressed_path)}'")
+            return True, compressed_path
         else:
             print(f"    [OVOTextureManager] Compression failed for '{os.path.basename(input_path)}'")
+            print(f"      - Falling back to copy without compression")
 
-        return result
+            # Fallback to plain copy if compression fails
+            output_name = os.path.basename(output_path)
+            copied_name = self.copy_texture_without_compression(input_path, output_name)
+
+            if copied_name != "[none]":
+                copied_path = os.path.join(self.export_directory, copied_name)
+                self.processed_textures[input_path] = copied_path
+                return True, copied_path
+
+            return False, None
 
     def _compress_texture_for_platform(self, system, input_path, output_path, format):
         """
@@ -147,6 +215,16 @@ class OVOTextureManager:
             tuple: (bool, str) Indicates if compression was successful and the path of the compressed file
         """
         print(f"    [OVOTextureManager] Compressing for platform: {system}")
+
+        # Make sure output directory exists
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+                print(f"      - Created output directory: {output_dir}")
+            except Exception as e:
+                print(f"      - ERROR: Failed to create output directory: {str(e)}")
+                return False, None
 
         # Compression on macOS
         if system == "Darwin":  # macOS
@@ -368,6 +446,8 @@ class OVOTextureManager:
                             print(f"      - ERROR: Failed to compress texture: {e}")
                             # Fallback: use uncompressed texture
                             return self.copy_texture_without_compression(source_path)
+                    else:
+                        print(f"      - ERROR: Image filepath does not exist: '{source_path}'")
             return "[none]"
 
         # If the node is not an Image Texture, try to trace through the "Color" socket
@@ -384,5 +464,5 @@ class OVOTextureManager:
                     if result != "[none]":
                         return result
 
-        print("      - No image found in node chain")
-        return "[none]"
+                print("      - No image found in node chain")
+                return "[none]"

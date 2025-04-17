@@ -4,6 +4,7 @@
 # This module defines the LightFactory class responsible for creating
 # Blender Light objects based on the parsed LIGHT data from a NodeRecord.
 # ================================================================
+import math
 
 import bpy
 
@@ -30,10 +31,10 @@ class LightFactory:
 
         # Set basic light properties.
         ldata.color = rec.color
-        ldata.energy = rec.radius * 10
+        ldata.energy = 10
         ldata.use_shadow = bool(rec.shadow)
         if rec.light_type == 2:
-            ldata.spot_size = rec.cutoff
+            ldata.spot_size = math.radians(rec.radius)
             ldata.spot_blend = rec.spot_exponent / 10.0
 
         light_obj = bpy.data.objects.new(rec.name, ldata)

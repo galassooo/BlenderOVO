@@ -9,6 +9,7 @@
 # The static method read_chunk() reads these values from a binary file
 # (or file-like object) and returns an OVOChunk instance, or None if
 # the end of the file is reached.
+# ================================================================
 
 import struct
 

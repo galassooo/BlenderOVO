@@ -43,8 +43,10 @@ from ovo_exporter_ui import OVO_PT_export_main, menu_func_export, register, unre
 # --------------------------------------------------------
 try:
     from .ovo_importer_ui import OT_ImportOVO, menu_func_import_importer
+    from .ovo_material_factory import MaterialFactory
 except ImportError:
     from ovo_importer_ui import OT_ImportOVO, menu_func_import_importer
+    from ovo_material_factory import MaterialFactory
 
 # --------------------------------------------------------
 # MENU FUNCTIONS
@@ -52,6 +54,15 @@ except ImportError:
 def menu_func_export(self, context):
     """Aggiunge la voce di menu per l'esportazione OVO"""
     self.layout.operator(OVO_PT_export_main.bl_idname, text="OverView Object (.ovo)")
+
+# --------------------------------------------------------
+# CLEANUP HANDLER
+# --------------------------------------------------------
+@bpy.app.handlers.persistent
+def cleanup_on_exit(*args):
+    """Handler che viene eseguito quando Blender sta per chiudersi"""
+    print("[OVO Tools] Cleaning up temporary files")
+    MaterialFactory.cleanup_flipped_textures()
 
 # --------------------------------------------------------
 # REGISTER / UNREGISTER
@@ -82,12 +93,27 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import_importer)
     print("OVO Importer registered successfully.")
 
+    # Register cleanup handlers
+    if cleanup_on_exit not in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.append(cleanup_on_exit)
+    if cleanup_on_exit not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(cleanup_on_exit)
+
 
 def unregister():
     """
     Unregisters all operators and menu items for both
     the OVO exporter and importer.
     """
+    # Perform cleanup first
+    cleanup_on_exit()
+
+    # Unregister cleanup handlers
+    if cleanup_on_exit in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(cleanup_on_exit)
+    if cleanup_on_exit in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(cleanup_on_exit)
+
     # === Exporter Unregister ===
     try:
         bpy.utils.unregister_class(OVO_PT_export_main)

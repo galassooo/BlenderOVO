@@ -9,11 +9,12 @@
 #
 # All low-level utilities (e.g. half-float decoding and null-terminated string reading)
 # are imported from the utility module.
-# --------------------------------------------------------
-
+# ================================================================
+import math
 import os
 import io
 import struct
+import mathutils
 
 # --------------------------------------------------------
 # IMPORTER IMPORTS
@@ -22,7 +23,7 @@ try:
     from .ovo_importer_utils import half_to_float, decode_half2x16, read_null_terminated_string
     from .ovo_importer_chunk import OVOChunk
     from .ovo_importer_node import OVOMaterial, NodeRecord, OVOPhysicsData
-    from .ovo_types import ChunkType
+    from .ovo_types import ChunkType, LightType
 except ImportError:
     # Fallback if running outside an addon environment.
     from ovo_importer_utils import half_to_float, decode_half2x16, read_null_terminated_string
@@ -159,7 +160,7 @@ class OVOImporterParser:
 
     def _parse_node(self, data: bytes) -> NodeRecord:
         """
-        Parses a generic NODE chunk (ChunkType.NODE, typically ID=1).
+        Parses a generic NODE chunk (ChunkType.NODE, ID=1).
 
         Expected data:
           - Node name (null-terminated string)
@@ -182,8 +183,7 @@ class OVOImporterParser:
 
     def _parse_light(self, data: bytes) -> NodeRecord:
         """
-        Parses a LIGHT chunk (ChunkType.LIGHT, typically ID=16).
-
+        Parses a LIGHT chunk (ChunkType.LIGHT, ID=16).
         Expected data:
           - Light name (null-terminated string)
           - 4x4 transformation matrix (16 floats, row-major)
@@ -197,7 +197,6 @@ class OVOImporterParser:
           - Spot exponent (float)
           - Shadow flag (1 byte)
           - Volumetric flag (1 byte)
-
         :param data: Raw bytes of the light chunk.
         :return: A NodeRecord with node_type set to "LIGHT", filled with light parameters.
         """
@@ -226,11 +225,34 @@ class OVOImporterParser:
         rec.spot_exponent = spot_exp
         rec.shadow = shadow
         rec.volumetric = volumetric
+
+        # Per luci direzionali (SUN), compensiamo la rotazione di -90° sull'asse X
+        # applicata durante l'esportazione
+        if light_type == LightType.DIRECTIONAL or light_type == LightType.SPOT:
+            # Direzione di default in Blender
+            default_dir = mathutils.Vector((0, 0, -1))
+
+            # Applica la rotazione di +90° sull'asse X alla direzione importata
+            # per compensare la rotazione di -90° applicata durante l'esportazione
+            conversion = mathutils.Matrix.Rotation(math.radians(90), 3, 'X')
+            corrected_dir = conversion @ mathutils.Vector(direction)
+
+            # Calcola il quaternione usando la direzione corretta
+            target_dir = corrected_dir.normalized()
+            print(f"[OVOImporter] Light '{light_name}' direction: raw={direction}, corrected={tuple(target_dir)}")
+
+            rec.light_quat = default_dir.rotation_difference(target_dir)
+        else:
+            # Per le altre luci (non direzionali), usiamo la direzione come è
+            default_dir = mathutils.Vector((0, 0, -1))
+            target_dir = mathutils.Vector(direction).normalized()
+            rec.light_quat = default_dir.rotation_difference(target_dir)
+
         return rec
 
     def _parse_mesh(self, data: bytes) -> NodeRecord:
         """
-        Parses a MESH chunk (ChunkType.MESH, typically ID=18).
+        Parses a MESH chunk (ChunkType.MESH, ID=18).
 
         Expected data:
           - Mesh name (null-terminated string)
