@@ -21,18 +21,20 @@ except ImportError:
     from ovo_physics import OVOPhysicsManager
 
 class OVO_Exporter:
-    def __init__(self, context, filepath, use_mesh=True, use_light=True, use_legacy_compression=True):
+    def __init__(self, context, filepath, use_mesh=True, use_light=True, use_legacy_compression=True, flip_textures=True):
         self.context = context
         self.filepath = filepath
         self.use_mesh = use_mesh
         self.use_light = use_light
         self.use_legacy_compression = use_legacy_compression
+        self.flip_textures = flip_textures  # Nuovo parametro per il flipping delle texture
         self.processed_objects = set()
         self.basePath = ""
 
         # Inizializza le classi di supporto
         self.packer = OVOPacker()
-        self.texture_manager = OVOTextureManager(filepath, use_legacy_compression)
+        # Passa il parametro flip_textures al texture manager
+        self.texture_manager = OVOTextureManager(filepath, use_legacy_compression, flip_textures)
         self.physics_manager = OVOPhysicsManager(self.packer)
 
     def should_export_object(self, obj):
@@ -640,10 +642,12 @@ class OVO_Exporter:
         print(f"      - Color: ({color[0]:.3f}, {color[1]:.3f}, {color[2]:.3f})")
 
         # Light radius
-        if light_data.type == 'POINT' or light_data.type == 'SPOT':
+        if light_data.type == 'POINT':
             radius = getattr(light_data, 'cutoff_distance', 100.0)
         elif light_data.type == 'SUN':
             radius = 0  # According to 3ds Max exporter for graphics project
+        elif light_data.type == 'SPOT':
+            radius = math.degrees(light_data.spot_size)
         else:
             radius = 90.0  # Default fallback
 
