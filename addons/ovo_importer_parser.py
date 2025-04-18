@@ -184,6 +184,21 @@ class OVOImporterParser:
     def _parse_light(self, data: bytes) -> NodeRecord:
         """
         Parses a LIGHT chunk (ChunkType.LIGHT, ID=16).
+        Expected data:
+          - Light name (null-terminated string)
+          - 4x4 transformation matrix (16 floats, row-major)
+          - children_count (unsigned int)
+          - A target string (ignored)
+          - Light type (1 byte)
+          - Color (3 floats)
+          - Radius (float)
+          - Direction (3 floats)
+          - Cutoff angle (float)
+          - Spot exponent (float)
+          - Shadow flag (1 byte)
+          - Volumetric flag (1 byte)
+        :param data: Raw bytes of the light chunk.
+        :return: A NodeRecord with node_type set to "LIGHT", filled with light parameters.
         """
         f = io.BytesIO(data)
         light_name = read_null_terminated_string(f)
@@ -211,9 +226,27 @@ class OVOImporterParser:
         rec.shadow = shadow
         rec.volumetric = volumetric
 
-        # Non c'è più bisogno di calcolare un quaternione o applicare conversioni.
-        # La direzione è solo un dato aggiuntivo, la rotazione verrà estratta
-        # direttamente dalla matrice nel builder.
+        # Per luci direzionali (SUN), compensiamo la rotazione di -90° sull'asse X
+        # applicata durante l'esportazione
+        if light_type == LightType.DIRECTIONAL or light_type == LightType.SPOT:
+            # Direzione di default in Blender
+            default_dir = mathutils.Vector((0, 0, -1))
+
+            # Applica la rotazione di +90° sull'asse X alla direzione importata
+            # per compensare la rotazione di -90° applicata durante l'esportazione
+            conversion = mathutils.Matrix.Rotation(math.radians(90), 3, 'X')
+            corrected_dir = conversion @ mathutils.Vector(direction)
+
+            # Calcola il quaternione usando la direzione corretta
+            target_dir = corrected_dir.normalized()
+            print(f"[OVOImporter] Light '{light_name}' direction: raw={direction}, corrected={tuple(target_dir)}")
+
+            rec.light_quat = default_dir.rotation_difference(target_dir)
+        else:
+            # Per le altre luci (non direzionali), usiamo la direzione come è
+            default_dir = mathutils.Vector((0, 0, -1))
+            target_dir = mathutils.Vector(direction).normalized()
+            rec.light_quat = default_dir.rotation_difference(target_dir)
 
         return rec
 
