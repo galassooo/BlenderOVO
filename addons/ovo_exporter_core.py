@@ -598,19 +598,14 @@ class OVO_Exporter:
         final_matrix = mathutils.Matrix.Identity(4)
 
         # Get position and apply it to the matrix
-        # Matrix conversion
+        # Calcola e salva la matrice completa, non solo la traslazione
         if obj.parent:
-            local_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
-            print(f"      - Has parent: '{obj.parent.name}'")
+            matrix_world = obj.parent.matrix_world.inverted() @ obj.matrix_world
         else:
-            print("      - No parent (root object)")
-            matrix = obj.matrix_world.copy()
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            local_matrix = conversion @ matrix
+            matrix_world = conversion @ obj.matrix_world.copy()
 
-        # Save matrix without additional conversions
-        final_matrix = local_matrix
-        chunk_data += self.packer.pack_matrix(final_matrix)
+        chunk_data += self.packer.pack_matrix(matrix_world)
 
         # Number of children
         chunk_data += struct.pack('I', num_children)
@@ -655,24 +650,27 @@ class OVO_Exporter:
         print(f"      - Radius: {radius:.3f}")
 
         # Light direction
+        # In write_light_chunk
         if light_data.type in {'SUN', 'SPOT'}:
+            # Vettore base che punta "in avanti" in Blender (asse -Z)
+            base_direction = mathutils.Vector((0.0, 0.0, -1.0))
+
+            # Applica la rotazione della luce per ottenere la direzione effettiva
+            # in cui punta la luce nel sistema di coordinate di Blender
             rot_mat = obj.matrix_world.to_3x3()
-            raw_direction = mathutils.Vector((0.0, 0.0, -1.0))
-            print(f"      - Original direction: ({raw_direction.x:.3f}, {raw_direction.y:.3f}, {raw_direction.z:.3f})")
+            blender_direction = rot_mat @ base_direction
 
-            world_direction = rot_mat @ raw_direction
-            print(
-                f"      - World direction: ({world_direction.x:.3f}, {world_direction.y:.3f}, {world_direction.z:.3f})")
-
+            # Applica la conversione dal sistema di coordinate di Blender a OpenGL
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 3, 'X')
-            converted_direction = conversion @ world_direction
-            print(
-                f"      - Converted direction: ({converted_direction.x:.3f}, {converted_direction.y:.3f}, {converted_direction.z:.3f})")
+            opengl_direction = conversion @ blender_direction
 
-            direction = converted_direction
+            # Normalizza e salva
+            direction = opengl_direction.normalized()
+            print(
+                f"      - Light direction (in OpenGL coords): ({direction.x:.3f}, {direction.y:.3f}, {direction.z:.3f})")
         else:
-            direction = mathutils.Vector((0.0, 0.0, -1.0))  # fallback
-            print(f"      - Default direction: ({direction.x:.3f}, {direction.y:.3f}, {direction.z:.3f})")
+            # Per luci non direzionali
+            direction = mathutils.Vector((0.0, 0.0, -1.0))
 
         chunk_data += self.packer.pack_vector3(direction)
 

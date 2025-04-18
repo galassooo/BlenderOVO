@@ -11,6 +11,7 @@
 # It then builds the parent–child hierarchy, creates a root if needed,
 # and applies final transformations.
 # ================================================================
+import math
 
 import bpy
 import mathutils
@@ -170,29 +171,26 @@ class OVOSceneBuilder:
                 log_info(f"Extra +90° X rotation applied to '{rec.name}' because parent is [root].", indent=1)
 
             if rec.node_type == "LIGHT":
-                if rec.light_type == LightType.DIRECTIONAL:
-                    if rec.light_quat is None:
-                        default_dir = mathutils.Vector((0, 0, -1))
-                        target_dir = mathutils.Vector(rec.direction).normalized()
-                        rec.light_quat = default_dir.rotation_difference(target_dir)
-                        log_info(f"Computed light_quat for '{rec.name}' from direction {rec.direction}.", indent=2)
-                if rec.light_quat:
-                    loc, base_rot, scale = mat.decompose()
-                    log_info(f"Light '{rec.name}' decomposition:", indent=1)
-                    log_info(f"  Location = {loc}", indent=2)
-                    log_info(f"  Base rotation (Euler) = {base_rot.to_euler('XYZ')}", indent=2)
-                    log_info(f"  Scale = {scale}", indent=2)
-                    corrected_rot = rec.light_quat @ base_rot
-                    log_info(f"Corrected rotation (Euler) = {corrected_rot.to_euler('XYZ')}", indent=2)
-                    final_mat = corrected_rot.to_matrix().to_4x4()
-                    final_mat[0][0] *= scale.x
-                    final_mat[1][1] *= scale.y
-                    final_mat[2][2] *= scale.z
-                    final_mat[0][3] = loc.x
-                    final_mat[1][3] = loc.y
-                    final_mat[2][3] = loc.z
-                    obj.matrix_basis = final_mat
-                    log_info(f"Final transformation for light '{rec.name}' applied: {final_mat.to_euler('XYZ')}", indent=1)
-                    continue
+                # Applica la matrice come per altri oggetti
+                obj.matrix_basis = mat
+
+                # Per luci direzionali o spot, estrai la rotazione come nei test
+                if rec.light_type in (LightType.DIRECTIONAL, LightType.SPOT):
+                    # Estraiamo solo la parte di rotazione dalla matrice
+                    rot_matrix = mat.to_3x3()
+
+                    # Estrai gli angoli di Eulero usando l'ordine 'ZYX' come nel test
+                    euler = rot_matrix.to_euler('ZYX')
+
+                    # Converti in gradi per debug
+                    x_deg = math.degrees(euler.x)
+                    y_deg = math.degrees(euler.y)
+                    z_deg = math.degrees(euler.z)
+
+                    log_info(
+                        f"Light '{rec.name}' rotation angles (ZYX): X={x_deg:.2f}°, Y={y_deg:.2f}°, Z={z_deg:.2f}°",
+                        indent=1)
+
+                continue  # Passa all'oggetto successivo
 
             obj.matrix_basis = mat
