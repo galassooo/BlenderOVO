@@ -225,7 +225,7 @@ class VisualTest(unittest.TestCase):
             # For RGB images - convert reference to grayscale
             ref_gray = np.dot(ref_array[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
 
-            # Create RGB version of grayscale image
+            #creo versione rgb della grayscale
             diff_img = np.zeros((ref_array.shape[0], ref_array.shape[1], 3), dtype=np.uint8)
             for c in range(3):
                 diff_img[:, :, c] = ref_gray
@@ -239,24 +239,24 @@ class VisualTest(unittest.TestCase):
                         b_diff > significant_threshold)
 
             # Mark significant differences in red
-            diff_img[:, :, 0][significant_diff] = 255  # Red channel to max
-            diff_img[:, :, 1][significant_diff] = 0  # Green channel to zero
-            diff_img[:, :, 2][significant_diff] = 0  # Blue channel to zero
+            diff_img[:, :, 0][significant_diff] = 255 #R
+            diff_img[:, :, 1][significant_diff] = 0#G
+            diff_img[:, :, 2][significant_diff] = 0# B
         else:
             # For grayscale images
-            # Create RGB version of grayscale image
+            #creo rgb da grayscale x result
             diff_img = np.zeros((ref_array.shape[0], ref_array.shape[1], 3), dtype=np.uint8)
             for c in range(3):
                 diff_img[:, :, c] = ref_array
 
-            # Calculate significant differences
+            #calc differenza
             channel_diff = np.abs(test_array.astype(np.int16) - ref_array.astype(np.int16))
             significant_diff = channel_diff > 40
 
             # Mark differences in red
-            diff_img[:, :, 0][significant_diff] = 255  # Red channel to max
-            diff_img[:, :, 1][significant_diff] = 0  # Green channel to zero
-            diff_img[:, :, 2][significant_diff] = 0  # Blue channel to zero
+            diff_img[:, :, 0][significant_diff] = 255#R
+            diff_img[:, :, 1][significant_diff] = 0 #G
+            diff_img[:, :, 2][significant_diff] = 0 #B
 
         # Save difference image
         Image.fromarray(diff_img.astype(np.uint8)).save(diff_image_path)
@@ -285,6 +285,8 @@ class VisualTest(unittest.TestCase):
             'normalMap': 0,
             'roughness': 0,
             'metallic': 0,
+
+            'material': 0,
 
             # Other features
             'lod': 0,
