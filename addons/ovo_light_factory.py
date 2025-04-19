@@ -4,11 +4,16 @@
 # This module defines the LightFactory class responsible for creating
 # Blender Light objects based on the parsed LIGHT data from a NodeRecord.
 # ================================================================
-import math
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
+import math
 import bpy
 
-
+# --------------------------------------------------------
+# Light Factory
+# --------------------------------------------------------
 class LightFactory:
     """
     LightFactory creates Blender Light objects from NodeRecord data representing lights.

@@ -1,102 +1,105 @@
-"""
-Modulo ovo_types.py
-Definisce le costanti e le enumerazioni utilizzate nel formato OVO.
+# ================================================================
+# OVO TYPES
+# ================================================================
+# Defines constants, enumerations, and default values used across
+# the OVO Blender plugin for import/export functionality.
+#
+# Centralizes shared types to avoid duplication and ensure
+# consistent maintenance of the codebase.
+# ================================================================
 
-Questo modulo centralizza tutte le definizioni di tipi, costanti e valori di default
-per evitare duplicazioni e facilitare la manutenzione del codice.
-"""
 
 # --------------------------------------------------------
-# Enumerazione per i Tipi di Chunk
+# Chunk Type Enumeration
 # --------------------------------------------------------
 class ChunkType:
     """
-    Enumerazione dei tipi di chunk nel file OVO.
-    Ogni chunk rappresenta un diverso tipo di dato.
+    Enumeration of chunk types within an OVO file.
+    Each chunk represents a different type of data.
     """
-    OBJECT = 0         # Chunk principale: la versione del file OVO
-    NODE = 1           # Nodo generico
-    OBJECT2D = 2       # Oggetto 2D
-    OBJECT3D = 3       # Oggetto 3D
-    LIST = 4           # Lista di dati
-    BUFFER = 5         # Buffer di dati
-    SHADER = 6         # Dati del shader
+    OBJECT = 0         # Object Chunk
+    NODE = 1           # Generic node
+    OBJECT2D = 2       # 2D object
+    OBJECT3D = 3       # 3D object
+    LIST = 4           # Data list
+    BUFFER = 5         # Data buffer
+    SHADER = 6         # Shader data
     TEXTURE = 7        # Texture
-    FILTER = 8         # Filtro
-    MATERIAL = 9       # Materiale
+    FILTER = 8         # Filter
+    MATERIAL = 9       # Material
     FBO = 10           # Framebuffer Object
     QUAD = 11          # Quad
     BOX = 12           # Box
     SKYBOX = 13        # Skybox
     FONT = 14          # Font
     CAMERA = 15        # Camera
-    LIGHT = 16         # Luce
-    BONE = 17          # Osso (per animazioni)
-    MESH = 18          # Mesh (geometria)
-    SKINNED = 19       # Mesh skinnata
-    INSTANCED = 20     # Istanza di oggetto
-    PIPELINE = 21      # Pipeline grafica
-    EMITTER = 22       # Emettitore di particelle
-    ANIM = 23          # Animazione
-    PHYSICS = 24       # Dati di fisica
-    LAST = 25          # Marker per ultimo tipo (usato per controllo)
+    LIGHT = 16         # Light
+    BONE = 17          # Bone
+    MESH = 18          # Mesh
+    SKINNED = 19       # Skinned Mesh
+    INSTANCED = 20     # Instanced Object
+    PIPELINE = 21      # Rendering Pipeline
+    EMITTER = 22       # Particle Emitter
+    ANIM = 23          # Animation
+    PHYSICS = 24       # Physics Data
+    LAST = 25          # Marker for last chunk type
 
 # --------------------------------------------------------
-# Enumerazione per i Tipi di Collision Hull (Fisica)
+# Collision Hull Types (Physics)
 # --------------------------------------------------------
 class HullType:
     """
-    Enumerazione dei tipi di hull collision usati per la fisica.
-    Indica la forma di collisione utilizzata dall'oggetto.
+    Enumeration of collision hull types used for physics.
+    Describes the shape used for collision detection.
     """
-    HULL_UNDEFINED = 0   # Non definito
-    HULL_SPHERE = 1      # Sfera
-    HULL_BOX = 2         # Box
-    HULL_CAPSULE = 3     # Capsula
-    HULL_CONVEX = 4      # Convezione (convex hull)
-    HULL_ORIGINAL = 5    # Forma originale
-    HULL_CUSTOM = 6      # Formato personalizzato
-    HULL_CONCAVE = 7     # Mesh concava
-    HULL_LAST = 8        # Marker di fine (per controlli di range)
+    HULL_UNDEFINED = 0      # Undefined
+    HULL_SPHERE = 1         # Sphere
+    HULL_BOX = 2            # Box
+    HULL_CAPSULE = 3        # Capsule
+    HULL_CONVEX = 4         # Convex hull
+    HULL_ORIGINAL = 5       # Original mesh shape
+    HULL_CUSTOM = 6         # Custom shape
+    HULL_CONCAVE = 7        # Concave mesh
+    HULL_LAST = 8           # End-of-range marker
 
 # --------------------------------------------------------
-# Enumerazione per i Tipi di Luce
+# Light Types
 # --------------------------------------------------------
 class LightType:
     """
-    Enumerazione dei tipi di luce nel formato OVO.
+    Enumeration of supported light types in the OVO format.
     """
-    OMNI = 0          # Luce puntiforme
-    DIRECTIONAL = 1   # Luce direzionale
-    SPOT = 2          # Luce spot
+    OMNI = 0          # Point light
+    DIRECTIONAL = 1   # Directional light
+    SPOT = 2          # Spot light
 
 # --------------------------------------------------------
-# Enumerazione per i Tipi di Fisica
+# Physics Object Types
 # --------------------------------------------------------
 class PhysicsType:
     """
-    Enumerazione dei tipi di fisica per gli oggetti.
+    Enumeration of physics object behaviors.
     """
-    STATIC = 0        # Oggetto statico
-    DYNAMIC = 1       # Oggetto dinamico
+    STATIC = 0        # Static object (non-movable)
+    DYNAMIC = 1       # Dynamic object (affected by forces)
 
 # --------------------------------------------------------
-# Formati di Compressione delle Texture
+# Texture Compression Formats
 # --------------------------------------------------------
 class TextureFormat:
     """
-    Definisce i formati di compressione delle texture supportati.
-    Include anche una mappatura per converter via Compressonator.
+    Supported texture compression formats.
+    Includes mapping for use with Compressonator tools.
     """
-    # Formati S3TC (Legacy)
-    DXT1 = "dxt1"     # Compressione S3TC senza canale alpha o con alpha binario
-    DXT5 = "dxt5"     # Compressione S3TC con canale alpha
+    # Legacy S3TC formats
+    DXT1 = "dxt1"  # No alpha or binary alpha
+    DXT5 = "dxt5"  # With alpha channel
 
-    # Formati BPTC (Alta Qualità)
-    BC5 = "bc5"       # Adatto per normal maps (due canali)
-    BC7 = "bc7"       # Alta qualità per texture con alpha
+    # High-quality BPTC formats
+    BC5 = "bc5"  # Ideal for normal maps (2-channel)
+    BC7 = "bc7"  # High-quality with alpha support
 
-    # Mappatura dei formati per Compressonator
+    # Format mapping for Compressonator
     FORMAT_MAP = {
         DXT1: "BC1",
         DXT5: "BC3",
@@ -105,48 +108,49 @@ class TextureFormat:
     }
 
 # --------------------------------------------------------
-# Costanti Generali del Formato OVO
+# General OVO Format Constants
 # --------------------------------------------------------
-OVO_VERSION = 8              # Versione corrente del formato OVO
-NONE_PLACEHOLDER = "[none]"    # Placeholder per valori nulli
-ROOT_NODE_NAME = "[root]"      # Nome usato per il nodo radice fittizio
+OVO_VERSION = 8                 # Current OVO format version
+NONE_PLACEHOLDER = "[none]"     # Placeholder for null values
+ROOT_NODE_NAME = "[root]"       # Name used for root node
 
 # --------------------------------------------------------
-# Valori di Default per Materiali
+# Default Material Values
 # --------------------------------------------------------
-DEFAULT_BASE_COLOR = (0.8, 0.8, 0.8)  # Colore base predefinito
-DEFAULT_EMISSION = (0.0, 0.0, 0.0)      # Emissione di default
-DEFAULT_ROUGHNESS = 0.5                 # Rugosità predefinita
-DEFAULT_METALLIC = 0.0                  # Metallicità predefinita
-DEFAULT_ALPHA = 1.0                     # Alpha predefinito
+DEFAULT_BASE_COLOR = (0.8, 0.8, 0.8)  # Default base color
+DEFAULT_EMISSION = (0.0, 0.0, 0.0)    # Default emission color
+DEFAULT_ROUGHNESS = 0.5              # Default roughness
+DEFAULT_METALLIC = 0.0               # Default metallic value
+DEFAULT_ALPHA = 1.0                  # Default alpha
 
 # --------------------------------------------------------
-# Costanti per la Conversione delle Coordinate
+# Coordinate Conversion Constants
 # --------------------------------------------------------
-BLENDER_TO_OVO_ROTATION = (-90.0, 'X')  # Rotazione per convertire da Blender a OVO
+BLENDER_TO_OVO_ROTATION = (-90.0, 'X')  # Rotation to convert Blender to OVO space
 
 # --------------------------------------------------------
-# Costanti per la Fisica
+# Physics Defaults
 # --------------------------------------------------------
-DEFAULT_MASS = 1.0              # Massa predefinita
-DEFAULT_FRICTION = 0.5          # Attrito predefinito
-DEFAULT_RESTITUTION = 0.0       # Rimbalzo predefinito
-DEFAULT_LINEAR_DAMPING = 0.04   # Smorzamento lineare predefinito
-DEFAULT_ANGULAR_DAMPING = 0.1     # Smorzamento angolare predefinito
+DEFAULT_MASS = 1.0              # Default mass
+DEFAULT_FRICTION = 0.5          # Default friction
+DEFAULT_RESTITUTION = 0.0       # Default restitution (bounciness)
+DEFAULT_LINEAR_DAMPING = 0.04   # Default linear damping
+DEFAULT_ANGULAR_DAMPING = 0.1   # Default angular damping
 
 # --------------------------------------------------------
-# Costanti per le Luci
+# Light Defaults
 # --------------------------------------------------------
-MAX_SPOT_ANGLE = 40.0           # Angolo massimo per spot
-DEFAULT_POINT_ANGLE = 180.0     # Angolo di default per luce puntiforme
-DEFAULT_DIRECTIONAL_ANGLE = 0.0  # Angolo di default per luce direzionale
+MAX_SPOT_ANGLE = 40.0           # Maximum spot light angle (degrees)
+DEFAULT_POINT_ANGLE = 180.0     # Default point light angle (for visual debug)
+DEFAULT_DIRECTIONAL_ANGLE = 0.0 # Default angle for directional lights
 
 # --------------------------------------------------------
-# Costanti per i Colori (ANSI)
+# ANSI Color Codes for Logging
 # --------------------------------------------------------
-GREEN = '\033[92m'    # Colore per elementi del modello (mesh)
-YELLOW = '\033[93m'   # Colore per le luci
-BLUE = '\033[94m'     # Colore per nodi generici
-RED = '\033[91m'      # Colore per messaggi di avviso
-RESET = '\033[0m'     # Ripristino del colore
-BOLD = '\033[1m'      # Testo in grassetto
+GREEN = '\033[92m'     # Color for mesh elements
+YELLOW = '\033[93m'    # Color for lights
+BLUE = '\033[94m'      # Color for generic nodes
+RED = '\033[91m'       # Color for warnings/errors
+MAGENTA = '\033[95m'   # Color for materials
+RESET = '\033[0m'      # Reset ANSI color
+BOLD = '\033[1m'       # Bold text

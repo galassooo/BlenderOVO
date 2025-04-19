@@ -6,12 +6,23 @@
 # UV mapping, material assignment, and physics properties.
 # ================================================================
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import bpy
-import os
-from .ovo_material_factory import MaterialFactory
-from .ovo_types import HullType
 
+try:
+    from .ovo_material_factory import MaterialFactory
+    from .ovo_types import HullType
+    from .ovo_log import log
+except ImportError:
+    from ovo_material_factory import MaterialFactory
+    from ovo_types import HullType
+    from ovo_log import log
 
+# --------------------------------------------------------
+# Mesh Factory
+# --------------------------------------------------------
 class MeshFactory:
     """
     MeshFactory creates a Blender Mesh object from mesh data provided in a NodeRecord.
@@ -22,6 +33,18 @@ class MeshFactory:
 
     @staticmethod
     def create(rec, materials, texture_directory, flip_textures=True):
+        """
+        Creates a Blender mesh object from a parsed NodeRecord.
+
+        Args:
+            rec (NodeRecord): Parsed mesh data.
+            materials (dict): Dictionary of OVOMaterial instances by name.
+            texture_directory (str): Directory where textures are stored.
+            flip_textures (bool): Whether to flip DDS textures vertically.
+
+        Returns:
+            bpy.types.Object: The newly created Blender mesh object.
+        """
         # Create mesh data.
         if not rec.vertices:
             mesh_data = bpy.data.meshes.new(rec.name)
@@ -53,10 +76,22 @@ class MeshFactory:
         # Apply physics if physics data is available.
         if hasattr(rec, 'physics_data') and rec.physics_data:
             MeshFactory.apply_physics(mesh_obj, rec.physics_data)
+
+        log(f"Created mesh: '{rec.name}' | Vertices={len(rec.vertices)} Faces={len(rec.faces)} Material={rec.material_name}",category="MESH", indent=1)
         return mesh_obj
 
+    # --------------------------------------------------------
+    # Apply Physics
+    # --------------------------------------------------------
     @staticmethod
     def apply_physics(obj, phys):
+        """
+        Applies physics properties from NodeRecord physics data to the Blender object.
+
+        Args:
+            obj (bpy.types.Object): The mesh object.
+            phys (OVOPhysicsData): Physics configuration.
+        """
         # Ensure a rigid body world exists.
         if not bpy.context.scene.rigidbody_world:
             bpy.ops.rigidbody.world_add()
@@ -64,6 +99,7 @@ class MeshFactory:
         obj.select_set(True)
         bpy.ops.rigidbody.object_add(type='ACTIVE')
         rb = obj.rigid_body
+
         if phys.obj_type == 1:
             rb.type = 'ACTIVE'
         elif phys.obj_type == 3:
@@ -71,6 +107,7 @@ class MeshFactory:
         else:
             rb.type = 'ACTIVE'
 
+        # Collision shape mapping
         HULL_MAP = {
             HullType.HULL_SPHERE: "SPHERE",
             HullType.HULL_BOX: "BOX",
@@ -82,10 +119,12 @@ class MeshFactory:
             # Default to 'BOX' if hull_type is not recognized
             return HULL_MAP.get(hull_type, "BOX")
 
-        # Set additional physics properties.
+        # Apply physics properties
         rb.collision_shape = get_blender_collision_shape(phys.hull_type)
         rb.friction = phys.dyn_fric
         rb.restitution = phys.bounciness
         rb.linear_damping = phys.lin_damp
         rb.angular_damping = phys.ang_damp
         obj.select_set(False)
+
+        log(f"Applied physics to '{obj.name}' | Type={rb.type} Shape={rb.collision_shape}", category="MESH", indent=2)

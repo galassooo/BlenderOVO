@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER BUILDER
-# --------------------------------------------------------
+# ================================================================
 # This module converts NodeRecord objects (parsed from the .ovo file)
 # into actual Blender objects. It delegates object creation to dedicated
 # factories:
@@ -11,16 +11,31 @@
 # It then builds the parent–child hierarchy, creates a root if needed,
 # and applies final transformations.
 # ================================================================
+
+# --------------------------------------------------------
+# Imports
+# --------------------------------------------------------
 import math
 
 import bpy
 import mathutils
 
-from .ovo_types import LightType
-from .ovo_mesh_factory import MeshFactory
-from .ovo_light_factory import LightFactory
-from .ovo_node_factory import NodeFactory
+try:
+    from .ovo_types import LightType
+    from .ovo_mesh_factory import MeshFactory
+    from .ovo_light_factory import LightFactory
+    from .ovo_node_factory import NodeFactory
+    from .ovo_log import log
+except ImportError:
+    from ovo_types import LightType
+    from ovo_mesh_factory import MeshFactory
+    from ovo_light_factory import LightFactory
+    from ovo_node_factory import NodeFactory
+    from ovo_log import log
 
+# --------------------------------------------------------
+# OVO SCENE BUILDER CLASS
+# --------------------------------------------------------
 class OVOSceneBuilder:
     """
     Builds a Blender scene from parsed importer data.
@@ -48,6 +63,9 @@ class OVOSceneBuilder:
         self.flip_textures = flip_textures
         self.record_to_object = {}
 
+    # --------------------------------------------------------
+    # Build Scene
+    # --------------------------------------------------------
     def build_scene(self):
         """
         Main entry point to build the Blender scene.
@@ -58,6 +76,11 @@ class OVOSceneBuilder:
           3) Establish a [root] node if multiple top-level nodes exist.
           4) Apply final transformations (transpose, rotations, quaternion corrections).
         """
+        log("", category="")
+        log("============================================================", category="")
+        log("[OVOSceneBuilder] Starting scene build from parsed nodes", category="")
+        log("============================================================", category="")
+
         # Create a Blender object for each node record using factories.
         for rec in self.node_records:
             if rec.node_type == "MESH":
@@ -78,12 +101,12 @@ class OVOSceneBuilder:
         # Apply final transformations for proper orientation.
         self._apply_transformations()
 
-        print("[OVOSceneBuilder] Scene build complete!")
-        print(f"[OVOSceneBuilder] Textures {'flipped' if self.flip_textures else 'not flipped'} during import")
+        log("", category="")
+        log("[OVOSceneBuilder] Scene build complete", category="")
+        flip_status = "flipped" if self.flip_textures else "not flipped"
+        log(f"Textures were {flip_status} during import", category="")
+        log("============================================================", category="")
 
-    # The _build_hierarchy, _establish_root_node, and _apply_transformations
-    # methods remain unchanged as they deal with structuring and transforming
-    # the scene rather than object creation.
     # --------------------------------------------------
     #  Build Hierarchy
     # --------------------------------------------------
@@ -121,7 +144,7 @@ class OVOSceneBuilder:
         """
         top_records = [rec for rec in self.node_records if not self.record_to_object[rec].parent]
         if len(top_records) > 1:
-            print("[OVOSceneBuilder] Multiple top-level nodes detected; creating [root].")
+            log("[OVOSceneBuilder] Multiple top-level nodes detected; creating [root].", category="NODE")
             root_obj = bpy.data.objects.new("[root]", None)
             root_obj.empty_display_type = 'PLAIN_AXES'
             bpy.context.collection.objects.link(root_obj)
@@ -141,26 +164,23 @@ class OVOSceneBuilder:
           - If the object is parented to a "[root]" object, an extra rotation may be applied.
           - For LIGHT nodes, quaternion correction is applied based on the light's parsed direction.
         """
-        def log_info(message, indent=0):
-            prefix = "  " * indent
-            print(f"{prefix}{message}")
-
-        log_info("[OVOImporter] Applying transformations.")
+        log("[OVOSceneBuilder] Applying transformations...", category="")
 
         for rec in self.node_records:
             if rec.name == "[root]":
-                log_info("Skipping [root] node.", indent=1)
+                log("Skipping [root] node.", category="NODE", indent=1)
                 continue
 
             obj = self.record_to_object.get(rec)
             if not obj:
-                log_info(f"Node '{rec.name}' has no associated Blender object. Skipping.", indent=1)
+                log(f"Node '{rec.name}' has no associated Blender object. Skipping.", category="NODE", indent=1)
                 continue
 
             mat = mathutils.Matrix(rec.raw_matrix)
             mat.transpose()  # Now in Blender's column-major format
 
             if obj.parent and obj.parent.name == "[root]":
+                # Apply an extra +90° X rotation to match Blender's orientation
                 conv_90_x = mathutils.Matrix([
                     [1, 0, 0, 0],
                     [0, 0, -1, 0],
@@ -168,29 +188,21 @@ class OVOSceneBuilder:
                     [0, 0, 0, 1]
                 ])
                 mat = conv_90_x @ mat
-                log_info(f"Extra +90° X rotation applied to '{rec.name}' because parent is [root].", indent=1)
+                log(f"Extra +90° X rotation applied to '{rec.name}' (parent is [root])", category="NODE", indent=1)
 
             if rec.node_type == "LIGHT":
-                # Applica la matrice come per altri oggetti
                 obj.matrix_basis = mat
 
-                # Per luci direzionali o spot, estrai la rotazione come nei test
                 if rec.light_type in (LightType.DIRECTIONAL, LightType.SPOT):
-                    # Estraiamo solo la parte di rotazione dalla matrice
                     rot_matrix = mat.to_3x3()
 
-                    # Estrai gli angoli di Eulero usando l'ordine 'ZYX' come nel test
                     euler = rot_matrix.to_euler('ZYX')
 
-                    # Converti in gradi per debug
                     x_deg = math.degrees(euler.x)
                     y_deg = math.degrees(euler.y)
                     z_deg = math.degrees(euler.z)
 
-                    log_info(
-                        f"Light '{rec.name}' rotation angles (ZYX): X={x_deg:.2f}°, Y={y_deg:.2f}°, Z={z_deg:.2f}°",
-                        indent=1)
-
-                continue  # Passa all'oggetto successivo
+                    log(f"Light '{rec.name}' rotation (ZYX): X={x_deg:.2f}°, Y={y_deg:.2f}°, Z={z_deg:.2f}°",category="LIGHT", indent=1)
+                continue
 
             obj.matrix_basis = mat

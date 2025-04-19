@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER CHUNK
-# --------------------------------------------------------
+# ================================================================
 # This module defines the OVOChunk class, which encapsulates one chunk
 # of data from an OVO file. Each chunk consists of:
 #   - A header of 8 bytes (4 bytes for chunk_id, 4 bytes for chunk_size)
@@ -11,9 +11,14 @@
 # the end of the file is reached.
 # ================================================================
 
+# --------------------------------------------------------
+# Imports
+# --------------------------------------------------------
 import struct
 
-
+# --------------------------------------------------------
+# Chunk Representation
+# --------------------------------------------------------
 class OVOChunk:
     """
     Represents a single chunk of data read from the .ovo file.
@@ -29,6 +34,9 @@ class OVOChunk:
         self.chunk_size = chunk_size
         self.data = data
 
+    # --------------------------------------------------------
+    # Read Chunk
+    # --------------------------------------------------------
     @staticmethod
     def read_chunk(file_obj):
         """

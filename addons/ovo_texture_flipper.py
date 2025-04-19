@@ -1,71 +1,78 @@
-"""
-ovo_texture_flipper.py
-Classe per il flipping verticale di file DDS compressi.
+# ================================================================
+# DDS TEXTURE FLIPPER
+# ================================================================
+# Handles vertical flipping of compressed DDS textures.
+# Supports standard formats (DXT1, DXT5, BC5) and DX10 headers.
+# Used during import/export for texture consistency in OVO files.
+# ================================================================
 
-Supporta i formati di compressione:
-- DXT1 (BC1)
-- DXT5 (BC3)
-- BC5 (ATI2, BC5U, BC5S)
-- Header DX10 con tutti i formati DXGI
-"""
-
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import os
 import struct
-import math
 import shutil
 import tempfile
+import sys
 
+try:
+    from .ovo_log import log
+except ImportError:
+    from ovo_log import log
+
+# --------------------------------------------------------
+# OVO Texture Flipper
+# --------------------------------------------------------
 class OVOTextureFlipper:
     """
-    Classe per il flipping verticale di file DDS, specificamente progettata
-    per l'esportatore e importatore OVO.
+    Handles vertical flipping of DDS textures, used by the OVO pipeline.
 
-    Supporta i formati DXT1, DXT5, BC5 e formati con header DX10.
+    Supports standard DXT1, DXT5, BC5 formats, and extended DX10 headers.
     """
 
-    # Costanti per i formati di compressione
-    DXT1_FOURCC = b'DXT1'  # 8 byte per blocco
-    DXT5_FOURCC = b'DXT5'  # 16 byte per blocco
-    BC5_FOURCC = b'ATI2'   # 16 byte per blocco (ATI2 è il codice usato per BC5)
-    BC5U_FOURCC = b'BC5U'  # Altro codice usato per BC5
-    BC5S_FOURCC = b'BC5S'  # Altro codice usato per BC5
-    DX10_FOURCC = b'DX10'  # Marker per header DX10 esteso
+    # Compression format codes
+    DXT1_FOURCC = b'DXT1'   # 8 bytes per block
+    DXT5_FOURCC = b'DXT5'   # 16 bytes per block
+    BC5_FOURCC = b'ATI2'    # 16 bytes per block (ATI2 is the FourCC code for BC5)
+    BC5U_FOURCC = b'BC5U'   # Alternate code used for BC5
+    BC5S_FOURCC = b'BC5S'   # Alternate code used for BC5
+    DX10_FOURCC = b'DX10'   # Marker for extended DX10 header
 
-    # Dict per la dimensione dei blocchi in base al formato
+    # Block size in bytes for each supported compression format
     BLOCK_SIZE = {
-        DXT1_FOURCC: 8,     # 8 byte per blocco
-        DXT5_FOURCC: 16,    # 16 byte per blocco
-        BC5_FOURCC: 16,     # 16 byte per blocco
-        BC5U_FOURCC: 16,    # 16 byte per blocco
-        BC5S_FOURCC: 16     # 16 byte per blocco
+        DXT1_FOURCC: 8,     # 8 bytes per block
+        DXT5_FOURCC: 16,    # 16 bytes per block
+        BC5_FOURCC: 16,     # 16 bytes per block
+        BC5U_FOURCC: 16,    # 16 bytes per block
+        BC5S_FOURCC: 16     # 16 bytes per block
     }
 
-    # DXGI_FORMAT values per i formati comuni
+    # DXGI_FORMAT values for common formats
     DXGI_FORMAT = {
-        71: 'BC1_TYPELESS',    # 8 byte per blocco
-        72: 'BC1_UNORM',       # 8 byte per blocco (DXT1)
-        73: 'BC1_UNORM_SRGB',  # 8 byte per blocco (DXT1)
-        74: 'BC2_TYPELESS',    # 16 byte per blocco
-        75: 'BC2_UNORM',       # 16 byte per blocco (DXT3)
-        76: 'BC2_UNORM_SRGB',  # 16 byte per blocco
-        77: 'BC3_TYPELESS',    # 16 byte per blocco
-        78: 'BC3_UNORM',       # 16 byte per blocco (DXT5)
-        79: 'BC3_UNORM_SRGB',  # 16 byte per blocco
-        80: 'BC4_TYPELESS',    # 8 byte per blocco
-        81: 'BC4_UNORM',       # 8 byte per blocco (BC4, 1 canale)
-        82: 'BC4_SNORM',       # 8 byte per blocco
-        83: 'BC5_TYPELESS',    # 16 byte per blocco
-        84: 'BC5_UNORM',       # 16 byte per blocco (BC5, 2 canali, ideal per normal maps)
-        85: 'BC5_SNORM',       # 16 byte per blocco (BC5 signed)
-        86: 'BC6H_TYPELESS',   # 16 byte per blocco
-        87: 'BC6H_UF16',       # 16 byte per blocco (BC6H, HDR)
-        88: 'BC6H_SF16',       # 16 byte per blocco
-        89: 'BC7_TYPELESS',    # 16 byte per blocco
-        90: 'BC7_UNORM',       # 16 byte per blocco (BC7, high quality)
-        91: 'BC7_UNORM_SRGB'   # 16 byte per blocco
+        71: 'BC1_TYPELESS',     # 8 bytes per block
+        72: 'BC1_UNORM',        # 8 bytes per block (DXT1)
+        73: 'BC1_UNORM_SRGB',   # 8 bytes per block (DXT1)
+        74: 'BC2_TYPELESS',     # 16 bytes per block
+        75: 'BC2_UNORM',        # 16 bytes per block (DXT3)
+        76: 'BC2_UNORM_SRGB',   # 16 bytes per block
+        77: 'BC3_TYPELESS',     # 16 bytes per block
+        78: 'BC3_UNORM',        # 16 bytes per block (DXT5)
+        79: 'BC3_UNORM_SRGB',   # 16 bytes per block
+        80: 'BC4_TYPELESS',     # 8 bytes per block
+        81: 'BC4_UNORM',        # 8 bytes per block (BC4, 1 channel)
+        82: 'BC4_SNORM',        # 8 bytes per block
+        83: 'BC5_TYPELESS',     # 16 bytes per block
+        84: 'BC5_UNORM',        # 16 bytes per block (BC5, 2 channels, ideal for normal maps)
+        85: 'BC5_SNORM',        # 16 bytes per block (signed BC5)
+        86: 'BC6H_TYPELESS',    # 16 bytes per block
+        87: 'BC6H_UF16',        # 16 bytes per block (BC6H, HDR)
+        88: 'BC6H_SF16',        # 16 bytes per block
+        89: 'BC7_TYPELESS',     # 16 bytes per block
+        90: 'BC7_UNORM',        # 16 bytes per block (BC7, high quality)
+        91: 'BC7_UNORM_SRGB'    # 16 bytes per block
     }
 
-    # DXGI Block Sizes (numero di byte per blocco compresso)
+    # DXGI Block Sizes
     DXGI_BLOCK_SIZE = {
         # BC1 (DXT1)
         71: 8, 72: 8, 73: 8,
@@ -83,7 +90,7 @@ class OVOTextureFlipper:
         89: 16, 90: 16, 91: 16
     }
 
-    # Posizioni nell'header DDS
+    # Header offsets
     HEIGHT_OFFSET = 12
     WIDTH_OFFSET = 16
     MIPMAP_COUNT_OFFSET = 28
@@ -92,7 +99,7 @@ class OVOTextureFlipper:
     PIXEL_FORMAT_OFFSET = 76
     FOURCC_OFFSET = 84
 
-    # Flag values
+    # DDS header flags
     DDSD_CAPS = 0x1
     DDSD_HEIGHT = 0x2
     DDSD_WIDTH = 0x4
@@ -107,30 +114,30 @@ class OVOTextureFlipper:
     DDPF_FOURCC = 0x4
     DDPF_RGB = 0x40
 
-    # Dimensione standard degli header
+    # Header size
     HEADER_SIZE = 128
-    DX10_HEADER_SIZE = 20  # Dimensione dell'header aggiuntivo DX10
+    DX10_HEADER_SIZE = 20  # Header size for DX10
 
+    # --------------------------------------------------------
+    # Flip DDS Texture
+    # --------------------------------------------------------
     @staticmethod
     def flip_dds_texture(input_path, output_path=None):
         """
-        Flippa verticalmente un file DDS, supportando formati standard e DX10.
+        Vertically flips a DDS texture, supporting standard formats and DX10 headers.
 
         Args:
-            input_path (str): Percorso del file DDS da flippare
-            output_path (str, opzionale): Percorso di output. Se None, sovrascrive il file originale
+            input_path (str): Path to the DDS file to flip.
+            output_path (str, optional): Output path. If None, overwrites the original file.
 
         Returns:
-            str: Percorso del file DDS flippato o del file originale in caso di errore
+            str: Path to the flipped DDS file, or original file on error.
         """
-        # Verifica che il file di input esista
         if not os.path.exists(input_path):
-            print(f"Il file {input_path} non esiste")
+            log(f"File not found: {input_path}", category="ERROR")
             return input_path
 
-        # Se non è specificato un output, usa lo stesso file di input
         if output_path is None:
-            # Crea un file temporaneo invece di sovrascrivere direttamente
             temp_dir = tempfile.gettempdir()
             temp_file = os.path.join(temp_dir, f"temp_{os.path.basename(input_path)}")
             final_output = input_path
@@ -139,15 +146,13 @@ class OVOTextureFlipper:
             final_output = output_path
 
         try:
-            # Leggi il file completo in memoria
             with open(input_path, 'rb') as f:
                 data = f.read()
 
-            # Verifica che sia un file DDS
             if len(data) < OVOTextureFlipper.HEADER_SIZE or data[:4] != b'DDS ':
-                raise ValueError(f"Il file {input_path} non è un file DDS valido")
+                raise ValueError(f"Il file {input_path}  is not a valid DDS file")
 
-            # Estrai informazioni dall'header
+            # Extract header info
             header = data[:OVOTextureFlipper.HEADER_SIZE]
             width = struct.unpack('<I', data[OVOTextureFlipper.WIDTH_OFFSET:OVOTextureFlipper.WIDTH_OFFSET+4])[0]
             height = struct.unpack('<I', data[OVOTextureFlipper.HEIGHT_OFFSET:OVOTextureFlipper.HEIGHT_OFFSET+4])[0]
@@ -155,16 +160,15 @@ class OVOTextureFlipper:
             has_mipmap = (flags & OVOTextureFlipper.DDSD_MIPMAPCOUNT) != 0
             mipmap_count = struct.unpack('<I', data[OVOTextureFlipper.MIPMAP_COUNT_OFFSET:OVOTextureFlipper.MIPMAP_COUNT_OFFSET+4])[0] if has_mipmap else 1
 
-            # Estrai informazioni sul formato pixel
             pixel_format_flags = struct.unpack('<I', data[OVOTextureFlipper.PIXEL_FORMAT_OFFSET:OVOTextureFlipper.PIXEL_FORMAT_OFFSET+4])[0]
             four_cc = data[OVOTextureFlipper.FOURCC_OFFSET:OVOTextureFlipper.FOURCC_OFFSET+4]
 
-            print(f"Flipping DDS: {os.path.basename(input_path)}")
-            print(f"  Dimensioni: {width}x{height}")
-            print(f"  Mipmaps: {mipmap_count}")
-            print(f"  FourCC: {four_cc.decode('ascii', errors='replace')}")
+            log(f"Flipping DDS: {os.path.basename(input_path)}", category="")
+            log(f"  Size: {width}x{height}", category="", indent=1)
+            log(f"  Mipmaps: {mipmap_count}", category="", indent=1)
+            log(f"  FourCC: {four_cc.decode('ascii', errors='replace')}", category="", indent=1)
 
-            # Determine se è un header DX10 e imposta la dimensione dell'header
+            # Check for DX10 header
             header_size = OVOTextureFlipper.HEADER_SIZE
             dxgi_format = None
             is_dx10 = False
@@ -174,122 +178,102 @@ class OVOTextureFlipper:
                 is_dx10 = True
                 header_size += OVOTextureFlipper.DX10_HEADER_SIZE  # Aggiungi dimensione header DX10
 
-                # Estrai DXGI_FORMAT dall'header DX10
                 dxgi_format = struct.unpack('<I', data[OVOTextureFlipper.HEADER_SIZE:OVOTextureFlipper.HEADER_SIZE+4])[0]
-                print(f"  DX10 header trovato. DXGI_FORMAT: {dxgi_format} ({OVOTextureFlipper.DXGI_FORMAT.get(dxgi_format, 'Unknown')})")
+                log(f"  DX10 header detected. DXGI_FORMAT: {dxgi_format} ({OVOTextureFlipper.DXGI_FORMAT.get(dxgi_format, 'Unknown')})",category="", indent=1)
 
-            # Determina la dimensione del blocco in base al formato
             block_size = None
 
             if is_dx10:
-                # Usa DXGI_FORMAT per determinare la dimensione del blocco
                 if dxgi_format in OVOTextureFlipper.DXGI_BLOCK_SIZE:
                     block_size = OVOTextureFlipper.DXGI_BLOCK_SIZE[dxgi_format]
-                    print(f"  Usando dimensione blocco di {block_size} byte per DXGI_FORMAT: {OVOTextureFlipper.DXGI_FORMAT.get(dxgi_format, 'Unknown')}")
+                    log(f"  Using block size: {block_size} bytes (DXGI_FORMAT: {OVOTextureFlipper.DXGI_FORMAT.get(dxgi_format)})",category="", indent=1)
                 else:
-                    raise ValueError(f"DXGI_FORMAT non supportato: {dxgi_format}")
+                    raise ValueError(f"DXGI_FORMAT not supported: {dxgi_format}")
             else:
-                # Usa FourCC per formati standard
                 if four_cc in OVOTextureFlipper.BLOCK_SIZE:
                     block_size = OVOTextureFlipper.BLOCK_SIZE[four_cc]
-                    print(f"  Usando dimensione blocco di {block_size} byte per formato: {four_cc.decode('ascii', errors='replace')}")
+                    log(f"  Using block size: {block_size} bytes for format: {four_cc.decode('ascii', errors='replace')}",category="", indent=1)
                 else:
-                    # Per formati non compressi o non gestiti, prova a guardare il pitch
                     if flags & OVOTextureFlipper.DDSD_PITCH:
-                        raise ValueError(f"Formato non compresso con pitch non supportato")
+                        raise ValueError(f"Uncompressed format with pitch not supported")
                     elif flags & OVOTextureFlipper.DDSD_LINEARSIZE:
-                        # Possiamo provare a capire la dimensione del blocco dalla dimensione lineare
                         linear_size = struct.unpack('<I', data[OVOTextureFlipper.PITCH_OR_LINEAR_SIZE_OFFSET:OVOTextureFlipper.PITCH_OR_LINEAR_SIZE_OFFSET+4])[0]
                         width_blocks = (width + 3) // 4
                         height_blocks = (height + 3) // 4
                         total_blocks = width_blocks * height_blocks
                         if total_blocks > 0:
                             estimated_block_size = linear_size / total_blocks
-                            # Arrotonda al valore più vicino (8 o 16)
-                            if estimated_block_size <= 12:  # Soglia tra 8 e 16
+                            if estimated_block_size <= 12:
                                 block_size = 8
                             else:
                                 block_size = 16
-                            print(f"  Dimensione blocco stimata: {estimated_block_size} -> arrotondata a {block_size}")
+                            log(f"  Estimated block size: {estimated_block_size:.2f} → rounded to {block_size}", category="WARNING", indent=1)
                         else:
-                            raise ValueError(f"Impossibile determinare la dimensione del blocco")
+                            raise ValueError("Unable to determine block size")
                     else:
-                        raise ValueError(f"Formato non supportato: {four_cc}")
+                        raise ValueError(f"Unsupported format: {four_cc}")
 
-            # Prepara il nuovo file
+            # Prepare new file
             with open(temp_file, 'wb') as f:
-                # Scrivi l'header originale (incluso DX10 se presente)
+                # Write header
                 f.write(data[:header_size])
 
-                # Posizione corrente nei dati
+                # Current data position
                 pos = header_size
 
-                # Per ogni livello di mipmap
                 current_width, current_height = width, height
 
                 for level in range(mipmap_count):
-                    # Calcola dimensioni in blocchi
+                    # Block size
                     width_blocks = max(1, (current_width + 3) // 4)
                     height_blocks = max(1, (current_height + 3) // 4)
 
-                    # Calcola la dimensione di questo livello
                     mipmap_size = width_blocks * height_blocks * block_size
 
-                    # Assicurati che ci siano abbastanza dati
                     if pos + mipmap_size > len(data):
-                        print(f"  Attenzione: i dati per mipmap {level} sembrano incompleti")
-                        # Copia il resto dei dati e esci
+                        log(f"  WARNING: Mipmap {level} data appears incomplete", category="WARNING", indent=1)
                         f.write(data[pos:])
                         break
 
-                    # Estrai dati della mipmap
+                    # Extract data from mipmap
                     mipmap_data = data[pos:pos+mipmap_size]
 
-                    # Calcola dimensione di una riga di blocchi
                     row_size = width_blocks * block_size
 
-                    # Dividi i dati in righe
                     rows = []
                     for i in range(0, len(mipmap_data), row_size):
                         if i + row_size <= len(mipmap_data):
                             rows.append(mipmap_data[i:i+row_size])
                         else:
-                            # Gestione dell'ultima riga parziale
                             rows.append(mipmap_data[i:])
 
-                    # Inverto le righe (flip verticale)
+                    # Vertical flip
                     flipped_mipmap = b''.join(reversed(rows))
 
-                    # Scrivi la mipmap flippata
                     f.write(flipped_mipmap)
 
-                    # Log dettagliato solo per il primo livello
                     if level == 0:
-                        print(f"  Mipmap base: {width_blocks}x{height_blocks} blocchi ({row_size} byte/riga)")
+                        log(f"  Base mipmap: {width_blocks}x{height_blocks} blocks ({row_size} bytes/row)",category="", indent=1)
 
-                    # Aggiorna posizione per il prossimo livello
                     pos += mipmap_size
 
-                    # Dimezza le dimensioni per il prossimo livello
                     current_width = max(1, current_width // 2)
                     current_height = max(1, current_height // 2)
 
-                # Se ci sono dati aggiuntivi dopo i mipmaps, copiali tali e quali
                 if pos < len(data):
                     remaining_data = data[pos:]
                     f.write(remaining_data)
-                    print(f"  Copiati {len(remaining_data)} byte di dati aggiuntivi dopo i mipmaps")
+                    log(f"  Copied {len(remaining_data)} extra bytes after mipmaps", category="", indent=1)
 
-            # Se stiamo sovrascrivendo il file originale, sposta il file temporaneo
             if temp_file != final_output:
                 shutil.move(temp_file, final_output)
 
-            print(f"Texture flippata salvata in: {final_output}")
+            log(f"Texture successfully flipped: {final_output}", category="")
             return final_output
 
         except (IOError, ValueError) as e:
-            print(f"ERRORE durante il flipping della texture: {str(e)}")
-            # In caso di errore, se stiamo sovrascrivendo, assicuriamoci che il file originale rimanga intatto
+            log(f"ERROR during texture flipping: {str(e)}", category="ERROR")
+
             if temp_file != input_path and output_path is None:
                 if os.path.exists(temp_file):
                     try:
@@ -298,20 +282,23 @@ class OVOTextureFlipper:
                         pass
             return input_path
         except Exception as e:
-            print(f"ERRORE non previsto durante il flipping: {str(e)}")
-            # In caso di errore generico, torna al file originale
+            log(f"UNEXPECTED ERROR during texture flip: {str(e)}", category="ERROR")
+
             return input_path
 
+    # --------------------------------------------------------
+    # Check DDS File Validity
+    # --------------------------------------------------------
     @staticmethod
     def is_dds_file(filepath):
         """
-        Controlla se un file è un DDS valido.
+        Checks whether a file is a valid DDS texture.
 
         Args:
-            filepath (str): Percorso del file da controllare
+            filepath (str): Path to the file to check.
 
         Returns:
-            bool: True se è un file DDS valido, False altrimenti
+            bool: True if the file is a valid DDS, False otherwise.
         """
         try:
             with open(filepath, 'rb') as f:
@@ -320,21 +307,24 @@ class OVOTextureFlipper:
         except:
             return False
 
+    # --------------------------------------------------------
+    # Get DDS Texture Info
+    # --------------------------------------------------------
     @staticmethod
     def get_dds_info(filepath):
         """
-        Estrae informazioni di base da un file DDS.
+        Extracts basic information from a DDS file.
 
         Args:
-            filepath (str): Percorso del file DDS
+            filepath (str): Path to the DDS file.
 
         Returns:
-            dict: Dizionario con informazioni (width, height, mipmap_count, format, dxgi_format)
-            None: Se il file non è un DDS valido
+            dict: Dictionary with info (width, height, mipmap_count, format, dxgi_format if present),
+                  or None if the file is not a valid DDS.
         """
         try:
             with open(filepath, 'rb') as f:
-                data = f.read(148)  # Leggi header DDS standard + header DX10
+                data = f.read(148)
 
             if data[:4] != b'DDS ':
                 return None
@@ -353,7 +343,7 @@ class OVOTextureFlipper:
                 'format': four_cc
             }
 
-            # Se è un formato DX10, estrai anche il DXGI_FORMAT
+            # If it is a DX10, extract the DXGI_FORMAT
             if four_cc == OVOTextureFlipper.DX10_FOURCC and len(data) >= OVOTextureFlipper.HEADER_SIZE + 4:
                 dxgi_format = struct.unpack('<I', data[OVOTextureFlipper.HEADER_SIZE:OVOTextureFlipper.HEADER_SIZE+4])[0]
                 result['dxgi_format'] = dxgi_format
@@ -361,47 +351,47 @@ class OVOTextureFlipper:
 
             return result
         except Exception as e:
-            print(f"Errore durante l'analisi del file DDS: {str(e)}")
+            log(f"Error analyzing DDS file: {str(e)}", category="ERROR")
             return None
 
+    # --------------------------------------------------------
+    # Safe Texture Flip
+    # --------------------------------------------------------
     @staticmethod
     def safe_flip_dds_texture(input_path, output_path=None):
         """
-        Versione sicura di flip_dds_texture che non solleva eccezioni.
+        A safe wrapper for flip_dds_texture that does not raise exceptions.
 
         Args:
-            input_path (str): Percorso del file DDS da flippare
-            output_path (str, opzionale): Percorso di output. Se None, sovrascrive il file originale
+            input_path (str): Path to the DDS texture to flip.
+            output_path (str, optional): Output path. If None, will overwrite the original.
 
         Returns:
-            tuple: (bool, str) Indica se il flipping è riuscito e il percorso del file risultante
+            tuple: (bool, str) → Success flag and resulting path.
         """
-        # Se i percorsi non sono validi, esci subito
         if not input_path or not os.path.exists(input_path):
             return False, input_path
 
         try:
-            # Tenta di flippare la texture
+            # Flip the texture
             result_path = OVOTextureFlipper.flip_dds_texture(input_path, output_path)
 
-            # Verifica che il file risultante esista
+            # Verify if the resulting file exists
             if result_path != input_path and os.path.exists(result_path):
                 return True, result_path
             elif os.path.exists(input_path):
-                # Se il flip non è riuscito ma l'originale è ok, torna quello
                 return False, input_path
             else:
-                # Se qualcosa è andato storto e l'originale è sparito, è un errore
                 return False, None
         except Exception as e:
-            print(f"Eccezione durante il flipping sicuro: {str(e)}")
+            log(f"Exception in safe texture flip: {str(e)}", category="ERROR")
             return False, input_path
 
 
-# Esempio di utilizzo
+# --------------------------------------------------------
+# Standalone Test Runner (for CLI use)
+# --------------------------------------------------------
 if __name__ == "__main__":
-    # Questo codice viene eseguito solo se il file viene eseguito direttamente
-    import sys
 
     if len(sys.argv) < 2:
         print("Utilizzo: python ovo_texture_flipper.py <percorso_file_dds> [percorso_output]")

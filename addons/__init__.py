@@ -1,6 +1,10 @@
-"""
-OVO Tools - Blender addon for importing and exporting OVO files.
-"""
+# ================================================================
+# OVO TOOLS - BLENDER ADDON
+# ================================================================
+# Entry point for the OVO Tools addon.
+# Registers all import/export UI panels and operators,
+# manages cleanup handlers, and integrates with Blender menus.
+# ================================================================
 
 bl_info = {
     "name": "OVO Tools (Importer & Exporter)",
@@ -13,7 +17,7 @@ bl_info = {
 }
 
 # --------------------------------------------------------
-# IMPORTA I MODULI NECESSARI
+# IMPORTS
 # --------------------------------------------------------
 import bpy
 from bpy_extras.io_utils import ExportHelper
@@ -23,41 +27,26 @@ from bpy.types import Operator, Panel
 import sys
 import os
 
-# Ottieni il percorso assoluto della directory che contiene questo file
+# Get the absolute path of the directory containing this file
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 # --------------------------------------------------------
-# IMPORTA I MODULI DELL'ADD-ON (EXPORTER SIDE)
+# ADD-ON MODULES IMPORTS (EXPORTER)
 # --------------------------------------------------------
-from ovo_types import ChunkType, HullType
-from ovo_packer import OVOPacker
-from ovo_texture_manager import OVOTextureManager
-from ovo_exporter_core import OVO_Exporter
-from ovo_lod_manager import OVOLodManager
-from ovo_exporter_ui import OVO_PT_export_main, menu_func_export, register, unregister
+from .ovo_exporter_ui import register as exporter_register, unregister as exporter_unregister
 
 # --------------------------------------------------------
 # IMPORTER IMPORTS
 # --------------------------------------------------------
-try:
-    from .ovo_importer_ui import OT_ImportOVO, menu_func_import_importer
-    from .ovo_material_factory import MaterialFactory
-except ImportError:
-    from ovo_importer_ui import OT_ImportOVO, menu_func_import_importer
-    from ovo_material_factory import MaterialFactory
-
-# --------------------------------------------------------
-# MENU FUNCTIONS
-# --------------------------------------------------------
-def menu_func_export(self, context):
-    """Aggiunge la voce di menu per l'esportazione OVO"""
-    self.layout.operator(OVO_PT_export_main.bl_idname, text="OverView Object (.ovo)")
+from .ovo_importer_ui import register as importer_register, unregister as importer_unregister
 
 # --------------------------------------------------------
 # CLEANUP HANDLER
 # --------------------------------------------------------
+from .ovo_material_factory import MaterialFactory
+
 @bpy.app.handlers.persistent
 def cleanup_on_exit(*args):
     """Handler che viene eseguito quando Blender sta per chiudersi"""
@@ -68,32 +57,14 @@ def cleanup_on_exit(*args):
 # REGISTER / UNREGISTER
 # --------------------------------------------------------
 def register():
-    """
-    Registers all operators and menu functions for both
-    the OVO exporter and importer within a single add-on.
-    """
+    """Register exporter, importer, and cleanup handlers."""
     # === Exporter Registration ===
-    try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
-        print("Operator già registrato, deregistrato prima di una nuova registrazione.")
-    except RuntimeError:
-        print("Operator non era registrato, procedo normalmente.")
-
-    bpy.utils.register_class(OVO_PT_export_main)
-    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-    print("OVO Exporter registrato con successo.")
+    exporter_register()
 
     # === Importer Registration ===
-    try:
-        bpy.utils.unregister_class(OT_ImportOVO)
-    except RuntimeError:
-        print("Operator was not registered, proceed normally.")
+    importer_register()
 
-    bpy.utils.register_class(OT_ImportOVO)
-    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_importer)
-    print("OVO Importer registered successfully.")
-
-    # Register cleanup handlers
+    # === Cleanup Registration ===
     if cleanup_on_exit not in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.append(cleanup_on_exit)
     if cleanup_on_exit not in bpy.app.handlers.save_pre:
@@ -101,69 +72,50 @@ def register():
 
 
 def unregister():
-    """
-    Unregisters all operators and menu items for both
-    the OVO exporter and importer.
-    """
-    # Perform cleanup first
+    """Unregister cleanup handlers, importer, and exporter."""
+    # === Run Cleanup ===
     cleanup_on_exit()
 
-    # Unregister cleanup handlers
+    # === Cleanup Unregister ===
     if cleanup_on_exit in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(cleanup_on_exit)
     if cleanup_on_exit in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(cleanup_on_exit)
 
     # === Exporter Unregister ===
-    try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
-        bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
-        print("OVO Exporter deregistrato con successo.")
-    except RuntimeError:
-        print("Operator non era registrato, skipping unregister.")
+    exporter_unregister()
 
     # === Importer Unregister ===
-    try:
-        bpy.utils.unregister_class(OT_ImportOVO)
-        bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_importer)
-        print("OVO Importer unregistered successfully.")
-    except RuntimeError:
-        print("OVO Importer wasn't registered, skipping unregister.")
+    importer_unregister()
 
-
+# --------------------------------------------------------
+# Dev Main
+# --------------------------------------------------------
 if __name__ == "__main__":
-    register()  # Registra l'addon
-    print("Addon OVO registrato.")
-
+    register()
+    print("Addon OVO registerd.")
     try:
-        import os
-
-        # Ottieni il percorso della cartella in cui si trova lo script attuale
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Specifica il percorso del file .blend da caricare (modifica secondo le tue necessità)
         blend_path = os.path.join(script_dir, "../scenes", "scarpa2.blend")
 
-        # Carica la scena
         bpy.ops.wm.open_mainfile(filepath=blend_path)
-        print(f"Scena caricata da: {blend_path}")
+        print(f"Uploaded scene from: {blend_path}")
 
-        # Crea un percorso relativo alla cartella dello script per l'output
         output_path = os.path.join(script_dir, "../bin", "output.ovo")
 
-        # Esegui l'export con il percorso relativo e i parametri desiderati
         bpy.ops.export_scene.ovo(
             filepath=output_path,
-            use_mesh=True,          # Includi le mesh
-            use_light=True,         # Includi le luci
-            use_legacy_compression=True  # Usa compressione S3TC
+            use_mesh=True,
+            use_light=True,
+            use_legacy_compression=True
         )
-        print(f"Export completato con successo! File salvato in: {output_path}")
+        print(f"Export Completed, file saved in: {output_path}")
 
     except Exception as e:
-        print(f"Errore durante l'export: {e}")
+        print(f"Error during export: {e}")
         import traceback
         traceback.print_exc()
 
     unregister()
-    print("Addon OVO deregistrato.")
+    print("OVO addon unregister.")
