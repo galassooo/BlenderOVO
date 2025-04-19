@@ -682,7 +682,7 @@ class OVO_Exporter:
 
             cutoff = min(math.degrees(light_data.spot_size / 2), 40.0)
         elif light_data.type == 'SUN':
-            cutoff = 0.0  # Directional light
+            cutoff = light_data.angle # Directional light
         else:
             cutoff = 180.0  # Point light default 180 (slides)
 

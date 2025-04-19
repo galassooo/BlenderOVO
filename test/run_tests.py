@@ -1,62 +1,75 @@
-# run_tests.py
-import unittest
-import sys
+#!/usr/bin/env python3
+"""
+Simplified test runner for OVO Tools visual tests.
+This script discovers and runs all visual tests in a Blender environment.
+"""
+
 import os
-import glob
+import sys
+import unittest
+import subprocess
 import importlib.util
 
-# Configurazione dei percorsi
+# Configure paths
 test_dir = os.path.dirname(os.path.abspath(__file__))
 if test_dir not in sys.path:
     sys.path.append(test_dir)
-cases_dir = os.path.join(test_dir, "cases")
-if cases_dir not in sys.path:
-    sys.path.append(cases_dir)
-
-# Importa il runner personalizzato
-from test_utils import JasmineStyleTextTestRunner
 
 
-def discover_and_load_tests():
-    """Scopre e carica automaticamente tutti i test nella directory cases"""
-    suite = unittest.TestSuite()
+def run_visual_tests():
+    """Runs the visual tests for OVO Tools."""
+    print("\n==== OVO Tools Visual Test Suite ====\n")
 
-    # Trova tutti i file di test
-    test_files = glob.glob(os.path.join(cases_dir, "test_*.py"))
+    # Import the visual test module
+    try:
+        from visual_test import VisualTest
+        # Create a test suite with our visual tests
+        suite = unittest.TestSuite()
+        suite.addTest(unittest.defaultTestLoader.loadTestsFromTestCase(VisualTest))
 
-    for test_file in test_files:
-        module_name = os.path.basename(test_file)[:-3]  # Rimuovi .py
-        print(f"Trovato modulo di test: {module_name}")
+        # Run the tests
+        runner = unittest.TextTestRunner(verbosity=2)
+        result = runner.run(suite)
 
-        # Carica il modulo dinamicamente
-        spec = importlib.util.spec_from_file_location(module_name, test_file)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        # Trova le classi di test nel modulo
-        for item_name in dir(module):
-            item = getattr(module, item_name)
-            if isinstance(item, type) and issubclass(item, unittest.TestCase) and item != unittest.TestCase:
-                print(f"  Aggiunta test class: {item_name}")
-                suite.addTest(unittest.defaultTestLoader.loadTestsFromTestCase(item))
-
-    return suite
+        # Return exit code
+        return 0 if result.wasSuccessful() else 1
+    except ImportError as e:
+        print(f"Error importing test module: {e}")
+        return 1
 
 
-def run_all_tests():
-    # Stampa intestazione
-    print("\n==== Test Suite OVO Exporter ====\n")
+def run_tests_in_blender():
+    """Launches Blender to run the tests (for command line execution)."""
+    blender_path = os.environ.get('BLENDER_PATH', 'blender')
 
-    # Scopri e carica tutti i test
-    suite = discover_and_load_tests()
+    try:
+        # Start Blender in background mode and run the tests
+        cmd = [
+            blender_path,
+            "--background",
+            "--python-expr",
+            "import sys; sys.path.append('{}'); from run_tests import run_visual_tests; sys.exit(run_visual_tests())".format(
+                test_dir.replace('\\', '\\\\')
+            )
+        ]
 
-    # Esegui i test
-    runner = JasmineStyleTextTestRunner(verbosity=1)
-    result = runner.run(suite)
+        # Execute Blender
+        result = subprocess.run(cmd, check=True)
+        return result.returncode
 
-    # Restituisci un codice di uscita per l'integrazione CI
-    return 0 if result.wasSuccessful() else 1
+    except subprocess.CalledProcessError as e:
+        print(f"Error running tests in Blender: {e}")
+        return e.returncode
+
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(run_all_tests())
+    # If running inside Blender, sys.executable will contain 'blender'
+    # Otherwise, we need to launch Blender
+    if 'blender' in sys.executable.lower():
+        sys.exit(run_visual_tests())
+    else:
+        sys.exit(run_tests_in_blender())

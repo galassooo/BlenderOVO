@@ -1,0 +1,22 @@
+scaling=1
+rotation=0
+translation=1
+
+poinLight=0
+sunLight=1
+spotLight=0
+
+light direction rotated=0
+color light=0
+
+albedo=1
+normalMap=0
+roughness=0
+metallic=0
+
+material=0
+
+lod=0
+
+empty nodes=0
+hierarchy=0
