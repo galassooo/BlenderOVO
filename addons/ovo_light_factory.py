@@ -38,6 +38,8 @@ class LightFactory:
         ldata.color = rec.color
         ldata.energy = 10
         ldata.use_shadow = bool(rec.shadow)
+        if rec.light_type == 1:
+            ldata.angle = rec.cutoff
         if rec.light_type == 2:
             ldata.spot_size = math.radians(rec.radius)
             ldata.spot_blend = rec.spot_exponent / 10.0

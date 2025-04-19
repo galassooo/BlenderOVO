@@ -1,0 +1,383 @@
+
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>OVO Tools Visual Test Report</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    h1, h2, h3 { color: #333; }
+                    .summary { background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+                    .pass { color: green; }
+                    .fail { color: red; }
+                    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+                    th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+                    th { background-color: #f2f2f2; }
+                    .test-row { margin-bottom: 40px; padding-bottom: 20px; border-bottom: 1px solid #ccc; }
+
+                    .image-container { 
+                        display: flex; 
+                        justify-content: space-between; 
+                        margin-top: 10px; 
+                    }
+
+                    .image-box { 
+                        width: 32%; 
+                        text-align: center; 
+                    }
+
+                    .image-box img { 
+                        max-width: 100%; 
+                        border: 1px solid #ccc; 
+                    }
+
+                    .progress-bar { 
+                        background-color: #f0f0f0; 
+                        height: 20px; 
+                        border-radius: 10px; 
+                        margin-top: 10px; 
+                    }
+
+                    .progress { 
+                        background-color: #4CAF50; 
+                        height: 100%; 
+                        border-radius: 10px; 
+                        width: 100.0%; 
+                    }
+
+                    .metadata-tags {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 5px;
+                        margin-top: 10px;
+                    }
+
+                    .metadata-tag {
+                        padding: 3px 8px;
+                        border-radius: 12px;
+                        background-color: #e0e0e0;
+                        font-size: 0.8em;
+                    }
+                </style>
+            </head>
+            <body>
+                <h1>OVO Tools Visual Test Report</h1>
+                <div class="summary">
+                    <h2>Summary</h2>
+                    <p>Tests completed: 11</p>
+                    <p>Tests passed: <span class="pass">11/11 (100.0%)</span></p>
+                    <div class="progress-bar">
+                        <div class="progress"></div>
+                    </div>
+                </div>
+            
+                <h2>Detailed Results</h2>
+                <table>
+                    <tr>
+                        <th>Test</th>
+                        <th>Status</th>
+                        <th>Difference</th>
+                        <th>Features</th>
+                    </tr>
+            
+                    <tr>
+                        <td>spot</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.11%</td>
+                        <td>scaling, translation, spotLight, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>shoe</td>
+                        <td class="pass">PASSED</td>
+                        <td>2.31%</td>
+                        <td>scaling, rotation, translation, sunLight, albedo, normalMap, hierarchy, poinLight, light direction rotated, color light, material, empty nodes</td>
+                    </tr>
+                
+                    <tr>
+                        <td>monkey</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.76%</td>
+                        <td>scaling, rotation, translation, sunLight, albedo, hierarchy, light direction rotated, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>home</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.22%</td>
+                        <td>scaling, translation, sunLight, albedo</td>
+                    </tr>
+                
+                    <tr>
+                        <td>icecream</td>
+                        <td class="pass">PASSED</td>
+                        <td>2.09%</td>
+                        <td>scaling, sunLight, albedo, normalMap, roughness, metallic, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>person</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.22%</td>
+                        <td>scaling, translation, sunLight, albedo, lod, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>bed</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.48%</td>
+                        <td>scaling, rotation, translation, sunLight, albedo, normalMap, roughness, metallic, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>cubes</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.00%</td>
+                        <td>scaling, translation, sunLight, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>cones</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.00%</td>
+                        <td>scaling, rotation, translation, sunLight, hierarchy, poinLight, light direction rotated, color light, material, empty nodes</td>
+                    </tr>
+                
+                    <tr>
+                        <td>bakedTransformation</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.00%</td>
+                        <td>scaling, rotation, translation, sunLight, light direction rotated, material</td>
+                    </tr>
+                
+                    <tr>
+                        <td>point</td>
+                        <td class="pass">PASSED</td>
+                        <td>0.01%</td>
+                        <td>scaling, translation, hierarchy, poinLight, color light, material</td>
+                    </tr>
+                </table>
+
+
+                <div class="test-row">
+                    <h3>spot - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.11%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">translation</span><span class="metadata-tag">spotLight</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="spot_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="spot_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="spot_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>shoe - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 2.31%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">rotation</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span><span class="metadata-tag">normalMap</span><span class="metadata-tag">hierarchy</span><span class="metadata-tag">poinLight</span><span class="metadata-tag">light direction rotated</span><span class="metadata-tag">color light</span><span class="metadata-tag">material</span><span class="metadata-tag">empty nodes</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="shoe_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="shoe_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="shoe_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>monkey - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.76%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">rotation</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span><span class="metadata-tag">hierarchy</span><span class="metadata-tag">light direction rotated</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="monkey_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="monkey_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="monkey_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>home - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.22%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="home_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="home_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="home_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>icecream - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 2.09%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span><span class="metadata-tag">normalMap</span><span class="metadata-tag">roughness</span><span class="metadata-tag">metallic</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="icecream_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="icecream_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="icecream_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>person - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.22%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span><span class="metadata-tag">lod</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="person_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="person_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="person_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>bed - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.48%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">rotation</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">albedo</span><span class="metadata-tag">normalMap</span><span class="metadata-tag">roughness</span><span class="metadata-tag">metallic</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="bed_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="bed_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="bed_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>cubes - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.00%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="cubes_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="cubes_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="cubes_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>cones - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.00%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">rotation</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">hierarchy</span><span class="metadata-tag">poinLight</span><span class="metadata-tag">light direction rotated</span><span class="metadata-tag">color light</span><span class="metadata-tag">material</span><span class="metadata-tag">empty nodes</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="cones_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="cones_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="cones_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>bakedTransformation - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.00%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">rotation</span><span class="metadata-tag">translation</span><span class="metadata-tag">sunLight</span><span class="metadata-tag">light direction rotated</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="bakedTransformation_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="bakedTransformation_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="bakedTransformation_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="test-row">
+                    <h3>point - <span class="pass">PASSED</span></h3>
+                    <p>Difference: 0.01%</p>
+                <div class="metadata-tags"><span class="metadata-tag">scaling</span><span class="metadata-tag">translation</span><span class="metadata-tag">hierarchy</span><span class="metadata-tag">poinLight</span><span class="metadata-tag">color light</span><span class="metadata-tag">material</span></div>
+                    <div class="image-container">
+                        <div class="image-box">
+                            <h4>Reference Image</h4>
+                            <img src="point_reference.png" alt="Reference">
+                        </div>
+                        <div class="image-box">
+                            <h4>Test Result</h4>
+                            <img src="point_result.png" alt="Result">
+                        </div>
+                        <div class="image-box">
+                            <h4>Differences</h4>
+                            <img src="point_diff.png" alt="Differences">
+                        </div>
+                    </div>
+                </div>
+                
+            </body>
+            </html>
+            
