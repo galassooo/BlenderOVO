@@ -117,7 +117,7 @@ class VisualTest(unittest.TestCase):
             os.makedirs(directory, exist_ok=True)
 
         # Test parameters
-        self.pixel_threshold = 0.10  # 10% difference threshold
+        self.pixel_threshold = 0.03  # 10% difference threshold
         self.report_data = []
 
         # Skip if PIL is not available
