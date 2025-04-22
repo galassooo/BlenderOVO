@@ -135,11 +135,7 @@ class OVOSceneBuilder:
     def _apply_transformations(self):
         """
         Finalizes the scene by applying the correct object transformations.
-        For each NodeRecord:
-          - Converts the raw_matrix (list of 4-tuples, row-major) to a mathutils.Matrix.
-          - Transposes it to obtain Blender's column-major matrix.
-          - If the object is parented to a "[root]" object, an extra rotation may be applied.
-          - For LIGHT nodes, quaternion correction is applied based on the light's parsed direction.
+        This updated version addresses issues with mesh rotation and light orientation.
         """
         def log_info(message, indent=0):
             prefix = "  " * indent
@@ -157,9 +153,11 @@ class OVOSceneBuilder:
                 log_info(f"Node '{rec.name}' has no associated Blender object. Skipping.", indent=1)
                 continue
 
+            # Convert the raw matrix to a Blender matrix
             mat = mathutils.Matrix(rec.raw_matrix)
-            mat.transpose()  # Now in Blender's column-major format
-
+            mat.transpose()  # Convert from row-major to column-major format
+            
+            # Apply an extra rotation for objects parented to the [root]
             if obj.parent and obj.parent.name == "[root]":
                 conv_90_x = mathutils.Matrix([
                     [1, 0, 0, 0],
@@ -170,27 +168,65 @@ class OVOSceneBuilder:
                 mat = conv_90_x @ mat
                 log_info(f"Extra +90° X rotation applied to '{rec.name}' because parent is [root].", indent=1)
 
-            if rec.node_type == "LIGHT":
-                # Applica la matrice come per altri oggetti
-                obj.matrix_basis = mat
-
-                # Per luci direzionali o spot, estrai la rotazione come nei test
-                if rec.light_type in (LightType.DIRECTIONAL, LightType.SPOT):
-                    # Estraiamo solo la parte di rotazione dalla matrice
-                    rot_matrix = mat.to_3x3()
-
-                    # Estrai gli angoli di Eulero usando l'ordine 'ZYX' come nel test
-                    euler = rot_matrix.to_euler('ZYX')
-
-                    # Converti in gradi per debug
-                    x_deg = math.degrees(euler.x)
-                    y_deg = math.degrees(euler.y)
-                    z_deg = math.degrees(euler.z)
-
-                    log_info(
-                        f"Light '{rec.name}' rotation angles (ZYX): X={x_deg:.2f}°, Y={y_deg:.2f}°, Z={z_deg:.2f}°",
-                        indent=1)
-
-                continue  # Passa all'oggetto successivo
-
+            # Set the basic transformation matrix for all objects
             obj.matrix_basis = mat
+
+            if rec.node_type == "MESH":
+                # For meshes, we'll rotate vertices by -90 degrees around X instead of +90
+                # This should counter the excess rotation
+                if hasattr(obj, 'data') and obj.data is not None and hasattr(obj.data, 'vertices'):
+                    mesh = obj.data
+                    
+                    # Create a -90-degree rotation matrix around X axis (counter-rotation)
+                    rot_x_minus_90 = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
+                    
+                    log_info(f"Applying counter-rotation to vertices for mesh '{rec.name}'", indent=1)
+                    
+                    # Apply rotation to each vertex
+                    for vertex in mesh.vertices:
+                        # Create a 4D vector with w=1
+                        v = mathutils.Vector((vertex.co.x, vertex.co.y, vertex.co.z, 1.0))
+                        
+                        # Apply the counter-rotation
+                        v_rot = rot_x_minus_90 @ v
+                        
+                        # Update the vertex coordinates
+                        vertex.co.x = v_rot.x
+                        vertex.co.y = v_rot.y
+                        vertex.co.z = v_rot.z
+                    
+                    # Ensure the mesh updates
+                    mesh.update()
+                    log_info(f"Vertices transformed for mesh '{rec.name}'", indent=1)
+                    
+            elif rec.node_type == "LIGHT":
+                # For lights, we'll handle directional and spot lights specially
+                if rec.light_type in (LightType.DIRECTIONAL, LightType.SPOT):
+                    if rec.light_quat:
+                        # If we have a quaternion for the light direction, use it directly
+                        log_info(f"Applying quaternion correction for light '{rec.name}'", indent=1)
+                        obj.rotation_mode = 'QUATERNION'
+                        obj.rotation_quaternion = rec.light_quat
+                    else:
+                        # If no quaternion, adjust Euler rotation
+                        log_info(f"Adjusting Euler rotation for light '{rec.name}'", indent=1)
+                        obj.rotation_mode = 'XYZ'
+                        euler = obj.rotation_euler.copy()
+                        # No adjustment needed since we're using the matrix as-is
+                        obj.rotation_euler = euler
+                else:
+                    # For other light types, use matrix as-is
+                    pass
+            else:
+                # For generic nodes, use matrix as-is
+                pass
+
+            # Log the final rotation for debugging
+            if obj.rotation_mode == 'QUATERNION':
+                log_info(f"Final rotation for '{rec.name}': Quaternion {obj.rotation_quaternion}", indent=1)
+            else:
+                final_euler = obj.rotation_euler
+                x_deg = math.degrees(final_euler.x)
+                y_deg = math.degrees(final_euler.y)
+                z_deg = math.degrees(final_euler.z)
+                log_info(f"Final rotation for '{rec.name}': X={x_deg:.2f}°, Y={y_deg:.2f}°, Z={z_deg:.2f}°", indent=1)

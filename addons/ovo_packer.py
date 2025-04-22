@@ -35,6 +35,24 @@ class OVOPacker:
         """
         # OpenGL reads matrices in column-major order (transposed relative to Blender)
         matrix = matrix.transposed()
+
+        def fix_matrix_forOpenGL(matrix):
+            """
+            Modifica la matrice per adattarla al sistema OpenGL:
+            - Scambia la seconda (Y) e la terza (Z) colonna.
+            - Inverte il segno della nuova terza colonna.
+            """
+            # Scambia colonna 1 (Y) con colonna 2 (Z)
+            tmp = matrix[1].copy()
+            matrix[1] = matrix[2]
+            matrix[2] = tmp
+
+            # Inverti la nuova colonna 2 (che prima era colonna 1)
+            matrix[2] = -matrix[2]
+
+            return matrix
+        matrix = fix_matrix_forOpenGL(matrix)
+    
         packed = struct.pack('16f', *[x for row in matrix for x in row])
         # No print statement here as this is called very frequently
         return packed

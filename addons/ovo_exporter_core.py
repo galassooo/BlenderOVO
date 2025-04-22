@@ -439,9 +439,15 @@ class OVO_Exporter:
             # Write vertex data
             print(f"      - Writing {len(vertices_data)} vertices")
             for pos, norm, uv in vertices_data:
-                chunk_data += self.packer.pack_vector3(pos)
-                # Use already transformed normal directly
-                chunk_data += self.packer.pack_normal(norm)
+                # Apply the same transformation to position that is used in pack_matrix
+                # This ensures consistency between the matrix and vertex transformations
+                transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
+                chunk_data += self.packer.pack_vector3(transformed_pos)
+                
+                # Transform normal the same way
+                transformed_norm = mathutils.Vector((norm.x, norm.z, -norm.y)).normalized()
+                chunk_data += self.packer.pack_normal(transformed_norm)
+                
                 chunk_data += self.packer.pack_uv(uv)
                 chunk_data += struct.pack('I', 0)  # tangent
 
@@ -531,8 +537,13 @@ class OVO_Exporter:
 
             # Write vertex data
             for pos, norm, uv in vertices_data:
-                chunk_data += self.packer.pack_vector3(pos)
-                chunk_data += self.packer.pack_normal(norm)
+                # Apply the same transformation as in write_mesh_chunk
+                transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
+                chunk_data += self.packer.pack_vector3(transformed_pos)
+                
+                transformed_norm = mathutils.Vector((norm.x, norm.z, -norm.y)).normalized()
+                chunk_data += self.packer.pack_normal(transformed_norm)
+                
                 chunk_data += self.packer.pack_uv(uv)
                 chunk_data += struct.pack('I', 0)  # tangent
 
@@ -605,7 +616,20 @@ class OVO_Exporter:
             conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
             matrix_world = conversion @ obj.matrix_world.copy()
 
-        chunk_data += self.packer.pack_matrix(matrix_world)
+
+        def debug_print_matrix(matrix):
+            print("\n[DEBUG] Matrix values with indices:")
+            for row in range(4):
+                for col in range(4):
+                    val = matrix[row][col]
+                    print(f"  m[{row}][{col}] = {val:.6f}")
+            print("\n[DEBUG] Matrix full:")
+            for row in matrix:
+                print(f"  ({row[0]: .6f}, {row[1]: .6f}, {row[2]: .6f}, {row[3]: .6f})")
+
+        final_final_matrix = (matrix_world)
+        chunk_data += self.packer.pack_matrix(final_final_matrix)
+        debug_print_matrix(final_final_matrix)
 
         # Number of children
         chunk_data += struct.pack('I', num_children)
