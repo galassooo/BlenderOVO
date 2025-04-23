@@ -1,4 +1,5 @@
 #imports
+from collections import defaultdict
 import bpy
 import struct
 import mathutils
@@ -311,9 +312,10 @@ class OVO_Exporter:
         # Crea una nuova matrice dalla trasposizione
         return C @ matrix_copy @ C_inv
     
+
     def calculate_tangents(self, bm, uv_layer):
         """
-        Calcola le tangenti per ogni faccia usando la formula standard OpenGL.
+        Calcola le tangenti per ogni vertice usando l'approccio di Mittring.
         
         Args:
             bm: BMesh object
@@ -322,57 +324,107 @@ class OVO_Exporter:
         Returns:
             dict: Dizionario che mappa indici dei vertici alle loro tangenti
         """
-        # Dizionario per memorizzare le tangenti per vertice
-        vertex_to_tangent = {}
+        # Se non c'è un UV layer, non possiamo calcolare tangenti significative
+        if not uv_layer:
+            print("      - AVVISO: Nessun UV layer, utilizzando tangenti di default")
+            # Mappa i vertici alle tangenti di default
+            return {v.index: mathutils.Vector((0.0, 1.0, 0.0)) for v in bm.verts}
         
-        # Per ogni faccia
+        # Step 1: Calcola le tangenti per faccia
+        face_tangents = {}
+        
         for face in bm.faces:
             # Skip facce degenerate
             if len(face.verts) < 3 or len(face.loops) < 3:
                 continue
-                
-            # Ottieni i vertici e i loro dati
+            
+            # Ottieni i primi 3 vertici e le loro UV
             v0 = face.verts[0].co
             v1 = face.verts[1].co
             v2 = face.verts[2].co
             
-            # Se non abbiamo UV, non possiamo calcolare una tangente significativa
-            if not uv_layer:
-                # Usa una tangente di default
-                for vert in face.verts:
-                    vertex_to_tangent[vert.index] = mathutils.Vector((1.0, 0.0, 0.0))
-                continue
-            
-            # Ottieni le coordinate UV
             uv0 = face.loops[0][uv_layer].uv
             uv1 = face.loops[1][uv_layer].uv
             uv2 = face.loops[2][uv_layer].uv
             
-            # Calcola gli edge e le differenze UV
+            # Calcola i due edge del triangolo
             edge1 = v1 - v0
             edge2 = v2 - v0
-            deltaUV1 = uv1 - uv0
-            deltaUV2 = uv2 - uv0
             
-            # Calcola il denominatore
-            f = 1.0 / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y)
+            # Calcola le differenze nelle coordinate UV
+            delta_uv1 = uv1 - uv0
+            delta_uv2 = uv2 - uv0
+            
+            # Calcola il determinante
+            den = delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x
             
             # Evita divisione per zero
-            if abs(f) < 0.0001:
-                # Usa una tangente di default
-                for vert in face.verts:
-                    vertex_to_tangent[vert.index] = mathutils.Vector((1.0, 0.0, 0.0))
+            if abs(den) < 0.0001:
+                # Per una faccia con UV degenerate, usa una tangente basata sulla normale
+                normal = face.normal.normalized()
+                face_tangents[face.index] = mathutils.Vector((0.0, 1.0, 0.0))
                 continue
             
-            # Calcola la tangente
-            tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2)
-            tangent.normalize()
+            # Calcola la tangente per questa faccia usando la formula standard
+            r = 1.0 / den
+            tangent = (delta_uv2.y * edge1 - delta_uv1.y * edge2) * r
             
-            # Assegna la tangente a tutti i vertici della faccia
-            for vert in face.verts:
-                vertex_to_tangent[vert.index] = tangent
+            # Normalizza la tangente
+            try:
+                tangent.normalize()
+            except:
+                # Fallback in caso di normalizzazione fallita
+                tangent = mathutils.Vector((1.0, 0.0, 0.0))
+            
+            # Salva la tangente per questa faccia
+            face_tangents[face.index] = tangent
         
-        return vertex_to_tangent
+        # Step 3: Calcola tangenti per vertice mediante media ponderata
+        vertex_tangents = {}
+        
+        for vert in bm.verts:
+            # Inizializza un vettore per accumulare le tangenti
+            acc_tangent = mathutils.Vector((0.0, 0.0, 0.0))
+            
+            # Accumula le tangenti dalle facce adiacenti
+            for face in vert.link_faces:
+                if face.index in face_tangents:
+                    # Ponderiamo per l'angolo del vertice nella faccia
+                    # Troviamo l'angolo appropriato
+                    for loop in face.loops:
+                        if loop.vert == vert:
+                            # Qui potresti calcolare l'angolo per una ponderazione più precisa
+                            # Per semplicità, usiamo un peso uniforme
+                            acc_tangent += face_tangents[face.index]
+                            break
+            
+            # Normalizza la tangente accumulata
+            if acc_tangent.length > 0.0001:
+                acc_tangent.normalize()
+            else:
+                # Fallback se non ci sono tangenti valide
+                acc_tangent = mathutils.Vector((1.0, 0.0, 0.0))
+            
+            # Ortogonalizza rispetto alla normale (Gram-Schmidt)
+            normal = vert.normal.normalized()
+            acc_tangent = (acc_tangent - normal * normal.dot(acc_tangent))
+            
+            # Normalizza di nuovo
+            if acc_tangent.length > 0.0001:
+                acc_tangent.normalize()
+            else:
+                # Se la tangente è diventata quasi zero, crea una tangente perpendicolare alla normale
+                if abs(normal.y) > 0.9:
+                    acc_tangent = mathutils.Vector((1.0, 0.0, 0.0))
+                else:
+                    acc_tangent = mathutils.Vector((0.0, 1.0, 0.0))
+                acc_tangent = (acc_tangent - normal * normal.dot(acc_tangent)).normalized()
+            
+            # Salva la tangente finale
+            vertex_tangents[vert.index] = acc_tangent
+        
+        return vertex_tangents
+
     def write_mesh_chunk(self, file, obj, num_children):
         """
         Writes a mesh chunk to the OVO file.
@@ -387,12 +439,6 @@ class OVO_Exporter:
         # Mesh name
         print(f"\n    [OVOExporter.write_mesh_chunk] Processing mesh: '{obj.name}'")
         chunk_data += self.packer.pack_string(obj.name)
-
-        def debug_matrix( name, matrix):
-            print(f"\n----- Matrix: {name} -----")
-            for i in range(4):
-                row = [f"{matrix[i][j]:.6f}" for j in range(4)]
-                print(f"Row {i}: {', '.join(row)}")
 
         # In write_mesh_chunk
         if obj.parent:
@@ -424,7 +470,11 @@ class OVO_Exporter:
         depsgraph = bpy.context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
         mesh = obj_eval.to_mesh()
+        mesh.calc_tangents()
 
+        loop_tangent = [l.tangent.copy()      for l in mesh.loops]
+        loop_sign    = [l.bitangent_sign      for l in mesh.loops]
+        poly_lstart  = [p.loop_start          for p in mesh.polygons]
         # Create two BMesh instances:
         # - original_bm: per mantenere i poligoni originali (non triangolati)
         # - triangulated_bm: per la triangolazione necessaria per l'esportazione
@@ -507,23 +557,24 @@ class OVO_Exporter:
                 # Per ogni vertice in questa faccia
                 for loop_idx, loop in enumerate(face.loops):
                     vert_idx = loop.vert.index
-                    
-                    # Posizione del vertice
-                    pos = loop.vert.co
-                    
-                    # Coordinate UV (default (0,0) se non esiste un UV layer)
-                    uv = mathutils.Vector((0.0, 0.0))
-                    if uv_layer:
-                        uv = loop[uv_layer].uv
-                    
-                    # Trasforma la posizione nel sistema di coordinate OpenGL (x, z, -y)
-                    transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
-                    
-                    # Aggiungi il vertice alla lista
+                    pos      = loop.vert.co
+                    uv       = loop[uv_layer].uv if uv_layer else mathutils.Vector((0.0, 0.0))
+
+                    mesh_loop_index = poly_lstart[face_idx] + loop_idx
+                    bl_tangent      = loop_tangent[mesh_loop_index]
+                    sign            = loop_sign   [mesh_loop_index]
+
+
+                    # trasformazioni assi
+                    transformed_pos  = mathutils.Vector((pos.x,         pos.z,        -pos.y))
+                    transformed_norm = mathutils.Vector((face_normal.x, face_normal.z, -face_normal.y)).normalized()
+                    transformed_tan  = mathutils.Vector((bl_tangent.x,  bl_tangent.z, -bl_tangent.y)).normalized()
+
                     vertex_idx = len(vertices_data)
-                    vertices_data.append((transformed_pos, transformed_face_normal, uv))
-                    
-                    # Registra questo vertice nella mappa (faccia, vert_idx) -> nuovo_indice_vertice
+                    # ▼ aggiungiamo tangente e sign alla tupla
+                    vertices_data.append((transformed_pos, transformed_norm, uv,
+                                        transformed_tan, sign))
+
                     face_vertex_map[(face_idx, vert_idx)] = vertex_idx
 
             # Invece di usare il BMesh triangolato automaticamente, triangoliamo manualmente le facce originali
@@ -570,39 +621,14 @@ class OVO_Exporter:
         # Modifica la scrittura dei vertici
         print(f"      - Scrittura {vertex_count} vertici")
         # Nella parte di scrittura dei vertici
-        for i, (pos, norm, uv) in enumerate(vertices_data):
-            # Scrittura posizione e normale come prima
+        for pos, norm, uv, tan, sign in vertices_data:
             chunk_data += self.packer.pack_vector3(pos)
             chunk_data += self.packer.pack_normal(norm)
             chunk_data += self.packer.pack_uv(uv)
-            
-            # Cerca l'indice originale
-            original_vert_idx = None
-            for (face_idx, vert_idx), idx in face_vertex_map.items():
-                if idx == i:
-                    original_vert_idx = vert_idx
-                    break
-            
-            # Scrittura tangente
-            if original_vert_idx is not None and original_vert_idx in tangents:
-                tangent = tangents[original_vert_idx]
-                
-                # Debug: stampa i valori prima della compressione
-                print(f"Debug - Vertice {i}, Tangente originale: {tangent.x:.3f}, {tangent.y:.3f}, {tangent.z:.3f}")
-                
-                # Trasforma per OpenGL
-                transformed = mathutils.Vector((tangent.x, tangent.z, -tangent.y)).normalized()
-                print(f"Debug - Tangente trasformata: {transformed.x:.3f}, {transformed.y:.3f}, {transformed.z:.3f}")
-                
-                # Comprimi
-                packed = self.packer.pack_tangent(tangent)
-                print(f"Debug - Valore compresso: {packed}")
-                
-                chunk_data += struct.pack('I', packed)
-            else:
-                # Valore di default
-                default_tangent = mathutils.Vector((1.0, 0.0, 0.0))
-                chunk_data += struct.pack('I', self.packer.pack_tangent(default_tangent))
+
+            # --- scrivi la tangente ---
+            chunk_data += self.packer.pack_tangent(tan)
+
              # Scrivi gli indici delle facce
 
         print(f"      - Scrittura {face_count} facce triangolate")

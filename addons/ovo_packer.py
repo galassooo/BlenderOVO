@@ -88,34 +88,30 @@ class OVOPacker:
     @staticmethod
     def pack_tangent(tangent):
         """
-        Converte e comprime una tangente in un unsigned int.
+        Converte una tangente nel formato di compressione 10-10-10-2.
         
         Args:
             tangent: mathutils.Vector della tangente
             
         Returns:
-            int: Valore compresso
+            bytes: Tangente compressa in formato binario (4 byte)
         """
-        # Converti nel sistema di coordinate OpenGL (x, z, -y)
-        t = mathutils.Vector((tangent.x, tangent.z, -tangent.y)).normalized()
-        
-        # Mappiamo da [-1,1] a [0,1023] per ogni componente
-        def float_to_int10(f):
+
+        def float_to_snorm10(f):
             f = max(-1.0, min(1.0, f))
             if f >= 0:
-                return int(f * 511)
+                return int(f * 511.0 + 0.5)
             else:
-                return int(1024 + f * 511)
-        
-        x = float_to_int10(t.x)
-        y = float_to_int10(t.y)
-        z = float_to_int10(t.z)
+                return int(1024 + (f * 511.0 - 0.5))
+
+        x = float_to_snorm10(tangent.x)
+        y = float_to_snorm10(tangent.y)
+        z = float_to_snorm10(tangent.z)
         w = 0  # Handedness
-        
-        # Pacchetta in un unico valore
-        packed = x | (y << 10) | (z << 20) | (w << 30)
-        
-        return packed
+
+        packed_int = x | (y << 10) | (z << 20) | (w << 30)
+        return struct.pack('I', packed_int)  # 4 byte little-endian unsigned int
+
     @staticmethod
     def pack_uv(uv):
         """
