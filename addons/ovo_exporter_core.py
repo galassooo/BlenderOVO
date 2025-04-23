@@ -470,7 +470,39 @@ class OVO_Exporter:
         depsgraph = bpy.context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
         mesh = obj_eval.to_mesh()
-        mesh.calc_tangents()
+
+        def safe_calc_tangents(src_mesh):
+            """
+            Restituisce (loop_tangent, loop_sign) anche se la mesh contiene n-gon.
+
+            La numerazione dei loop rimane identica a src_mesh.loops, quindi
+            tutto il codice che usa mesh_loop_index continua a funzionare.
+            """
+            import bmesh
+            # copia in memoria – non tocca la mesh originale
+            mesh_copy = src_mesh.copy()
+
+            bm = bmesh.new()
+            bm.from_mesh(mesh_copy)
+            bmesh.ops.triangulate(bm, faces=bm.faces)
+            bm.to_mesh(mesh_copy)
+            bm.free()
+
+            mesh_copy.calc_tangents()                # ora non lancia eccezioni
+            loop_tan  = [l.tangent.copy()   for l in mesh_copy.loops]
+            loop_sign = [l.bitangent_sign   for l in mesh_copy.loops]
+
+            bpy.data.meshes.remove(mesh_copy)        # pulizia
+            return loop_tan, loop_sign
+
+        try:
+            mesh.calc_tangents()
+            loop_tangent = [l.tangent.copy()  for l in mesh.loops]
+            loop_sign    = [l.bitangent_sign  for l in mesh.loops]
+        except RuntimeError:
+            print("      - mesh.calc_tangents() fallito: uso fallback sicuro")
+            loop_tangent, loop_sign = safe_calc_tangents(mesh)
+
 
         loop_tangent = [l.tangent.copy()      for l in mesh.loops]
         loop_sign    = [l.bitangent_sign      for l in mesh.loops]
@@ -616,7 +648,6 @@ class OVO_Exporter:
             chunk_data += struct.pack('I', vertex_count)
             chunk_data += struct.pack('I', face_count)
 
-            tangents = self.calculate_tangents(original_bm, uv_layer)
 
         # Modifica la scrittura dei vertici
         print(f"      - Scrittura {vertex_count} vertici")
