@@ -111,6 +111,57 @@ class OVOTextureFlipper:
     HEADER_SIZE = 128
     DX10_HEADER_SIZE = 20  # Dimensione dell'header aggiuntivo DX10
 
+    # ---------------------------------------------------------- ### PATCH
+    #  Helpers per ribaltare i 4×4 pixel interni a un blocco      #
+    # ---------------------------------------------------------- #
+    @staticmethod
+    def _flip_bc1_block(block: bytes) -> bytes:
+        """Flip verticale di un blocco BC1 / DXT1 (8 byte)."""
+        # byte 0-3 = color0 & color1 (rimangono invariati)
+        colour_hdr = block[:4]
+        # byte 4-7 = 16 indici da 2 bit (row-major, little-endian)
+        idx = int.from_bytes(block[4:], 'little')
+        # separa le 4 righe da 8 bit e inverti l’ordine
+        r0 = (idx >>  0) & 0xFF
+        r1 = (idx >>  8) & 0xFF
+        r2 = (idx >> 16) & 0xFF
+        r3 = (idx >> 24) & 0xFF
+        flipped = (r3      |
+                  (r2 <<  8) |
+                  (r1 << 16) |
+                  (r0 << 24))
+        return colour_hdr + flipped.to_bytes(4, 'little')
+
+    @staticmethod
+    def _flip_bc3_alpha(block: bytes) -> bytes:
+        """Flip dei 6 byte di indici alpha usati da DXT5/BC3/BC4/BC5."""
+        a_idx = int.from_bytes(block, 'little')        # 48 bit
+        rows = [(a_idx >> (12 * i)) & 0xFFF for i in range(4)]
+        flipped = sum(rows[i] << (12 * (3 - i)) for i in range(4))
+        return flipped.to_bytes(6, 'little')
+
+    @staticmethod
+    def _flip_bc3_block(block: bytes) -> bytes:
+        """Flip verticale di un blocco BC3 / DXT5 (16 byte)."""
+        # 0-1 alpha0/alpha1 | 2-7 indici alpha (48 bit)
+        a0a1 = block[0:2]
+        a_idx = OVOTextureFlipper._flip_bc3_alpha(block[2:8])
+        # 8-15 = BC1 colour part
+        colour = OVOTextureFlipper._flip_bc1_block(block[8:])
+        return a0a1 + a_idx + colour
+
+    @staticmethod
+    def _flip_bc5_block(block: bytes) -> bytes:
+        """Flip verticale di un blocco BC5 (16 byte = R-channel + G-channel)."""
+        # 0-7   = canale R  (BC4 ≃ alpha-part di BC3)
+        # 8-15  = canale G
+        r_part = block[:8]
+        g_part = block[8:]
+        r_flipped = r_part[:2] + OVOTextureFlipper._flip_bc3_alpha(r_part[2:])
+        g_flipped = g_part[:2] + OVOTextureFlipper._flip_bc3_alpha(g_part[2:])
+        return r_flipped + g_flipped
+    # ---------------------------------------------------------- ### END PATCH
+
     @staticmethod
     def flip_dds_texture(input_path, output_path=None):
         """
@@ -249,16 +300,41 @@ class OVOTextureFlipper:
                     row_size = width_blocks * block_size
 
                     # Dividi i dati in righe
-                    rows = []
-                    for i in range(0, len(mipmap_data), row_size):
-                        if i + row_size <= len(mipmap_data):
-                            rows.append(mipmap_data[i:i+row_size])
-                        else:
-                            # Gestione dell'ultima riga parziale
-                            rows.append(mipmap_data[i:])
+                                        # -------------------------------------------------- ### PATCH
+                    # Flip per‐blocco + flip delle righe
+                    flipped_rows = []
+                    for row in range(height_blocks):           # dal top al bottom
+                        start = row * row_size
+                        end   = start + row_size
+                        row_data = mipmap_data[start:end]
+                        new_row  = bytearray()
 
-                    # Inverto le righe (flip verticale)
-                    flipped_mipmap = b''.join(reversed(rows))
+                        # percorri tutti i blocchi di quella riga
+                        for col in range(width_blocks):
+                            b_start = col * block_size
+                            b_end   = b_start + block_size
+                            blk = row_data[b_start:b_end]
+
+                            # scegli la routine adatta
+                            if block_size == 8:
+                                blk = OVOTextureFlipper._flip_bc1_block(blk)
+                            else:  # 16 byte
+                                if four_cc in (OVOTextureFlipper.DXT5_FOURCC,) or \
+                                   dxgi_format in (77, 78, 79):          # BC3 / DXT5
+                                    blk = OVOTextureFlipper._flip_bc3_block(blk)
+                                elif four_cc in (OVOTextureFlipper.BC5_FOURCC,
+                                                  OVOTextureFlipper.BC5U_FOURCC,
+                                                  OVOTextureFlipper.BC5S_FOURCC) or \
+                                     dxgi_format in (83, 84, 85):        # BC5
+                                    blk = OVOTextureFlipper._flip_bc5_block(blk)
+                                # altri formati 16 byte (BC7, BC6H, …) non necessitano flip intra-blocco
+                            new_row.extend(blk)
+
+                        flipped_rows.append(bytes(new_row))
+
+                    # ora capovolgi l’ordine delle righe di blocchi
+                    flipped_mipmap = b''.join(reversed(flipped_rows))
+                    # -------------------------------------------------- ### END PATCH
 
                     # Scrivi la mipmap flippata
                     f.write(flipped_mipmap)
