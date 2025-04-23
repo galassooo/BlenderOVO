@@ -263,18 +263,19 @@ class OVO_Exporter:
         # Node name
         chunk_data += self.packer.pack_string(obj.name)
 
-        # Matrix conversion
-        matrix = obj.matrix_world.copy()
+
         if obj.parent:
-            matrix_world = obj.parent.matrix_world.inverted() @ obj.matrix_world
-            print(f"      - Has parent: '{obj.parent.name}'")
+            parent_world_blender = obj.parent.matrix_world
+            child_world_blender = obj.matrix_world
+            local_matrix_blender = parent_world_blender.inverted() @ child_world_blender
         else:
-            print("      - No parent (root object)")
-            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            matrix_world = conversion @ matrix
+            local_matrix_blender = obj.matrix_world.copy()
+
+        # Save matrix without additional conversions
+        final_matrix = self.convert_openGl(local_matrix_blender, isParent=obj.parent is None)
+        chunk_data += self.packer.pack_matrix(final_matrix)
 
         # Pack the matrix
-        chunk_data += self.packer.pack_matrix(matrix_world)
         print("      - Matrix transformed and packed")
 
         # Number of children
@@ -298,6 +299,80 @@ class OVO_Exporter:
         file.write(chunk_data)
         print(f"    [OVOExporter.write_node_chunk] Completed: '{obj.name}'")
 
+    def convert_openGl(self, matrix, isParent=False):
+
+        matrix_copy = matrix.copy()
+        C = mathutils.Matrix(((1,0,0,0),
+                      (0,0,1,0),
+                      (0,-1,0,0),
+                      (0,0,0,1)))
+        C_inv = C.transposed() 
+
+        # Crea una nuova matrice dalla trasposizione
+        return C @ matrix_copy @ C_inv
+    
+    def calculate_tangents(self, bm, uv_layer):
+        """
+        Calcola le tangenti per ogni faccia usando la formula standard OpenGL.
+        
+        Args:
+            bm: BMesh object
+            uv_layer: Layer UV del BMesh
+            
+        Returns:
+            dict: Dizionario che mappa indici dei vertici alle loro tangenti
+        """
+        # Dizionario per memorizzare le tangenti per vertice
+        vertex_to_tangent = {}
+        
+        # Per ogni faccia
+        for face in bm.faces:
+            # Skip facce degenerate
+            if len(face.verts) < 3 or len(face.loops) < 3:
+                continue
+                
+            # Ottieni i vertici e i loro dati
+            v0 = face.verts[0].co
+            v1 = face.verts[1].co
+            v2 = face.verts[2].co
+            
+            # Se non abbiamo UV, non possiamo calcolare una tangente significativa
+            if not uv_layer:
+                # Usa una tangente di default
+                for vert in face.verts:
+                    vertex_to_tangent[vert.index] = mathutils.Vector((1.0, 0.0, 0.0))
+                continue
+            
+            # Ottieni le coordinate UV
+            uv0 = face.loops[0][uv_layer].uv
+            uv1 = face.loops[1][uv_layer].uv
+            uv2 = face.loops[2][uv_layer].uv
+            
+            # Calcola gli edge e le differenze UV
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            deltaUV1 = uv1 - uv0
+            deltaUV2 = uv2 - uv0
+            
+            # Calcola il denominatore
+            f = 1.0 / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y)
+            
+            # Evita divisione per zero
+            if abs(f) < 0.0001:
+                # Usa una tangente di default
+                for vert in face.verts:
+                    vertex_to_tangent[vert.index] = mathutils.Vector((1.0, 0.0, 0.0))
+                continue
+            
+            # Calcola la tangente
+            tangent = f * (deltaUV2.y * edge1 - deltaUV1.y * edge2)
+            tangent.normalize()
+            
+            # Assegna la tangente a tutti i vertici della faccia
+            for vert in face.verts:
+                vertex_to_tangent[vert.index] = tangent
+        
+        return vertex_to_tangent
     def write_mesh_chunk(self, file, obj, num_children):
         """
         Writes a mesh chunk to the OVO file.
@@ -313,18 +388,20 @@ class OVO_Exporter:
         print(f"\n    [OVOExporter.write_mesh_chunk] Processing mesh: '{obj.name}'")
         chunk_data += self.packer.pack_string(obj.name)
 
-        # Matrix conversion
+        def debug_matrix( name, matrix):
+            print(f"\n----- Matrix: {name} -----")
+            for i in range(4):
+                row = [f"{matrix[i][j]:.6f}" for j in range(4)]
+                print(f"Row {i}: {', '.join(row)}")
+
+        # In write_mesh_chunk
         if obj.parent:
-            local_matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
-            print(f"      - Has parent: '{obj.parent.name}'")
+            local_bl = obj.matrix_local  
         else:
-            print("      - No parent (root object)")
-            matrix = obj.matrix_world.copy()
-            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            local_matrix = conversion @ matrix
+            local_bl = obj.matrix_world
 
         # Save matrix without additional conversions
-        final_matrix = local_matrix
+        final_matrix = self.convert_openGl(local_bl)
         chunk_data += self.packer.pack_matrix(final_matrix)
 
         # Children and material data
@@ -332,6 +409,7 @@ class OVO_Exporter:
         chunk_data += self.packer.pack_string("[none]")
         chunk_data += struct.pack('B', 0)
 
+                
         # Material assignment
         if obj.material_slots and obj.material_slots[0].material:
             material_name = obj.material_slots[0].material.name
@@ -342,19 +420,31 @@ class OVO_Exporter:
             print("      - No material assigned")
 
         # Get mesh data from evaluated object
-        print("      - Creating BMesh for triangulation")
+        print("      - Getting mesh data")
         depsgraph = bpy.context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
         mesh = obj_eval.to_mesh()
 
-        # Create BMesh for triangulation
+        # Create two BMesh instances:
+        # - original_bm: per mantenere i poligoni originali (non triangolati)
+        # - triangulated_bm: per la triangolazione necessaria per l'esportazione
+        # Crea due BMesh instances
         import bmesh
-        bm = bmesh.new()
-        bm.from_mesh(mesh)
-        bmesh.ops.triangulate(bm, faces=bm.faces)
+        original_bm = bmesh.new()
+        original_bm.from_mesh(mesh)
+
+        triangulated_bm = bmesh.new()
+        triangulated_bm.from_mesh(mesh)
+        bmesh.ops.triangulate(triangulated_bm, faces=triangulated_bm.faces)
+
+        # Assicurati che le tabelle di lookup siano aggiornate
+        original_bm.faces.ensure_lookup_table()
+        original_bm.verts.ensure_lookup_table()
+        triangulated_bm.faces.ensure_lookup_table()
+        triangulated_bm.verts.ensure_lookup_table()
 
         # Get UV layer
-        uv_layer = bm.loops.layers.uv.active
+        uv_layer = original_bm.loops.layers.uv.active
         if uv_layer:
             print(f"      - UV layer found: '{mesh.uv_layers.active.name if mesh.uv_layers.active else 'default'}'")
         else:
@@ -385,7 +475,7 @@ class OVO_Exporter:
 
         if should_multi_lod:
             print("      - Generating multiple LODs for high-poly mesh")
-            # Generate LOD meshes - we don't pass the UV layer reference here
+            # Generate LOD meshes
             lod_meshes = lod_manager.generate_lod_meshes(obj)
 
             # Write LOD data
@@ -399,67 +489,128 @@ class OVO_Exporter:
             chunk_data += struct.pack('I', 1)
             print("      - LOD count: 1 (single LOD)")
 
-            # Collect UV data for vertex-face pairs
-            vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
-            vertices_data = []  # Final list of vertices
-            vertex_map = {}  # Map (vertex_idx, uv_key) -> new_vertex_idx
+            # Lista per i dati dei vertici e indici delle facce
+            vertices_data = []  # [posizione, normale, uv]
+            face_indices = []  # Indici per le facce triangolate
+            face_vertex_map = {}  # Mappa per ricordare quali vertici corrispondono a quali facce originali
 
-            print("      - Analyzing mesh geometry")
-
-            # Collect UVs
-            for face in bm.faces:
-                for loop in face.loops:
+            # Prima, creiamo un vertice per ogni vertice delle facce originali (non triangolate)
+            print("      - Processando le facce originali per vertici e normali di faccia")
+            # Prima, creiamo un vertice per ogni vertice delle facce originali (non triangolate)
+            print("      - Processando le facce originali per vertici e normali di faccia")
+            for face_idx, face in enumerate(original_bm.faces):
+                # Calcola la normale della faccia (non quella interpolata ai vertici)
+                face_normal = face.normal.normalized()
+                # Trasforma la normale secondo le stesse regole (x, z, -y)
+                transformed_face_normal = mathutils.Vector((face_normal.x, face_normal.z, -face_normal.y)).normalized()
+                
+                # Per ogni vertice in questa faccia
+                for loop_idx, loop in enumerate(face.loops):
+                    vert_idx = loop.vert.index
+                    
+                    # Posizione del vertice
+                    pos = loop.vert.co
+                    
+                    # Coordinate UV (default (0,0) se non esiste un UV layer)
+                    uv = mathutils.Vector((0.0, 0.0))
                     if uv_layer:
-                        vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
+                        uv = loop[uv_layer].uv
+                    
+                    # Trasforma la posizione nel sistema di coordinate OpenGL (x, z, -y)
+                    transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
+                    
+                    # Aggiungi il vertice alla lista
+                    vertex_idx = len(vertices_data)
+                    vertices_data.append((transformed_pos, transformed_face_normal, uv))
+                    
+                    # Registra questo vertice nella mappa (faccia, vert_idx) -> nuovo_indice_vertice
+                    face_vertex_map[(face_idx, vert_idx)] = vertex_idx
 
-            # Process vertices
-            for vert in bm.verts:
-                # Find unique UVs for this vertex
-                vert_uvs = set()
-                for face in vert.link_faces:
-                    if (vert.index, face.index) in vertex_face_uvs:
-                        uv = vertex_face_uvs[(vert.index, face.index)]
-                        vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
+            # Invece di usare il BMesh triangolato automaticamente, triangoliamo manualmente le facce originali
+            face_indices = []  # Indici per le facce triangolate
 
-                # Create a new vertex for each unique UV
-                for uv_key in vert_uvs:
-                    new_idx = len(vertices_data)
-                    # Transform normal here
-                    transformed_normal = (vert.normal)
-                    vertices_data.append((vert.co, transformed_normal, mathutils.Vector(uv_key)))
-                    vertex_map[(vert.index, uv_key)] = new_idx
+            # Per ogni faccia originale (non triangolata)
+            print("      - Triangolazione manuale delle facce")
+            face_count = 0
+            for face_idx, face in enumerate(original_bm.faces):
+                # Se la faccia ha 4 vertici (quad)
+                if len(face.verts) == 4:
+                    # Indici dei vertici nella lista vertices_data
+                    v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
+                    
+                    # Triangola la faccia quad in modo coerente (0,1,2) e (0,2,3)
+                    # Questo crea due triangoli: v0-v1-v2 e v0-v2-v3
+                    face_indices.extend([v_indices[0], v_indices[1], v_indices[2]])
+                    face_indices.extend([v_indices[0], v_indices[2], v_indices[3]])
+                    face_count += 2  # Aggiungiamo 2 triangoli
+                elif len(face.verts) == 3:
+                    # Per le facce che sono già triangoli, usa direttamente i loro indici
+                    v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
+                    face_indices.extend(v_indices)
+                    face_count += 1  # Aggiungiamo 1 triangolo
+                else:
+                    # Per facce con più di 4 vertici (n-gon)
+                    # Usa una triangolazione a ventaglio dal primo vertice
+                    v0_idx = face_vertex_map.get((face_idx, face.verts[0].index), 0)
+                    for i in range(1, len(face.verts) - 1):
+                        v1_idx = face_vertex_map.get((face_idx, face.verts[i].index), 0)
+                        v2_idx = face_vertex_map.get((face_idx, face.verts[i+1].index), 0)
+                        face_indices.extend([v0_idx, v1_idx, v2_idx])
+                        face_count += 1  # Aggiungiamo 1 triangolo
 
-            print(f"      - Processed {len(bm.verts)} original vertices into {len(vertices_data)} final vertices")
-            print(f"      - Faces: {len(bm.faces)}")
+            # Scrivi il numero di vertici e facce
+            vertex_count = len(vertices_data)
+            print(f"      - Vertici: {vertex_count}")
+            print(f"      - Facce triangolate: {face_count}")
+            chunk_data += struct.pack('I', vertex_count)
+            chunk_data += struct.pack('I', face_count)
 
-            # Write vertex and face counts
-            chunk_data += struct.pack('I', len(vertices_data))
-            chunk_data += struct.pack('I', len(bm.faces))
+            tangents = self.calculate_tangents(original_bm, uv_layer)
 
-            # Write vertex data
-            print(f"      - Writing {len(vertices_data)} vertices")
-            for pos, norm, uv in vertices_data:
-                # Apply the same transformation to position that is used in pack_matrix
-                # This ensures consistency between the matrix and vertex transformations
-                transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
-                chunk_data += self.packer.pack_vector3(transformed_pos)
+        # Modifica la scrittura dei vertici
+        print(f"      - Scrittura {vertex_count} vertici")
+        # Nella parte di scrittura dei vertici
+        for i, (pos, norm, uv) in enumerate(vertices_data):
+            # Scrittura posizione e normale come prima
+            chunk_data += self.packer.pack_vector3(pos)
+            chunk_data += self.packer.pack_normal(norm)
+            chunk_data += self.packer.pack_uv(uv)
+            
+            # Cerca l'indice originale
+            original_vert_idx = None
+            for (face_idx, vert_idx), idx in face_vertex_map.items():
+                if idx == i:
+                    original_vert_idx = vert_idx
+                    break
+            
+            # Scrittura tangente
+            if original_vert_idx is not None and original_vert_idx in tangents:
+                tangent = tangents[original_vert_idx]
                 
-                # Transform normal the same way
-                transformed_norm = mathutils.Vector((norm.x, norm.z, -norm.y)).normalized()
-                chunk_data += self.packer.pack_normal(transformed_norm)
+                # Debug: stampa i valori prima della compressione
+                print(f"Debug - Vertice {i}, Tangente originale: {tangent.x:.3f}, {tangent.y:.3f}, {tangent.z:.3f}")
                 
-                chunk_data += self.packer.pack_uv(uv)
-                chunk_data += struct.pack('I', 0)  # tangent
+                # Trasforma per OpenGL
+                transformed = mathutils.Vector((tangent.x, tangent.z, -tangent.y)).normalized()
+                print(f"Debug - Tangente trasformata: {transformed.x:.3f}, {transformed.y:.3f}, {transformed.z:.3f}")
+                
+                # Comprimi
+                packed = self.packer.pack_tangent(tangent)
+                print(f"Debug - Valore compresso: {packed}")
+                
+                chunk_data += struct.pack('I', packed)
+            else:
+                # Valore di default
+                default_tangent = mathutils.Vector((1.0, 0.0, 0.0))
+                chunk_data += struct.pack('I', self.packer.pack_tangent(default_tangent))
+             # Scrivi gli indici delle facce
 
-            # Write face indices
-            print(f"      - Writing {len(bm.faces)} faces")
-            for face in bm.faces:
-                for loop in face.loops:
-                    if (loop.vert.index, face.index) in vertex_face_uvs:
-                        uv = vertex_face_uvs[(loop.vert.index, face.index)]
-                        uv_key = (round(uv.x, 5), round(uv.y, 5))
-                        new_idx = vertex_map[(loop.vert.index, uv_key)]
-                        chunk_data += struct.pack('I', new_idx)
+        print(f"      - Scrittura {face_count} facce triangolate")
+        for i in range(0, len(face_indices), 3):
+            # Assicurati di non superare i limiti dell'array
+            if i + 2 < len(face_indices):
+                for j in range(3):
+                    chunk_data += struct.pack('I', face_indices[i + j])
 
         # Write the complete mesh chunk
         print("      - Writing mesh chunk to file")
@@ -467,7 +618,8 @@ class OVO_Exporter:
         file.write(chunk_data)
 
         # Cleanup
-        bm.free()
+        original_bm.free()
+        triangulated_bm.free()
         obj_eval.to_mesh_clear()
         print(f"    [OVOExporter.write_mesh_chunk] Completed: '{obj.name}'")
 
@@ -542,7 +694,7 @@ class OVO_Exporter:
                 chunk_data += self.packer.pack_vector3(transformed_pos)
                 
                 transformed_norm = mathutils.Vector((norm.x, norm.z, -norm.y)).normalized()
-                chunk_data += self.packer.pack_normal(transformed_norm)
+                chunk_data += self.packer.pack_normal_tangent(transformed_norm)
                 
                 chunk_data += self.packer.pack_uv(uv)
                 chunk_data += struct.pack('I', 0)  # tangent
@@ -610,11 +762,14 @@ class OVO_Exporter:
 
         # Get position and apply it to the matrix
         # Calcola e salva la matrice completa, non solo la traslazione
+        # Matrix conversion
         if obj.parent:
-            matrix_world = obj.parent.matrix_world.inverted() @ obj.matrix_world
+            matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
+            local_matrix = self.convert_openGl(matrix, isParent=False)
         else:
-            conversion = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-            matrix_world = conversion @ obj.matrix_world.copy()
+            print("      - No parent (root object)")
+            matrix = obj.matrix_world.copy()
+            local_matrix = self.convert_openGl(matrix, isParent=True)
 
 
         def debug_print_matrix(matrix):
@@ -627,7 +782,7 @@ class OVO_Exporter:
             for row in matrix:
                 print(f"  ({row[0]: .6f}, {row[1]: .6f}, {row[2]: .6f}, {row[3]: .6f})")
 
-        final_final_matrix = (matrix_world)
+        final_final_matrix = (local_matrix)
         chunk_data += self.packer.pack_matrix(final_final_matrix)
         debug_print_matrix(final_final_matrix)
 
