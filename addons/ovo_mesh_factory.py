@@ -7,6 +7,7 @@
 # ================================================================
 
 import bpy
+import mathutils
 import os
 from .ovo_material_factory import MaterialFactory
 from .ovo_types import HullType
@@ -27,7 +28,14 @@ class MeshFactory:
             mesh_data = bpy.data.meshes.new(rec.name)
         else:
             mesh_data = bpy.data.meshes.new(rec.name)
-            mesh_data.from_pydata(rec.vertices, [], rec.faces)
+
+            transformed_vertices = []
+            for vertex in rec.vertices:
+                transformed_vertex = MeshFactory.transform_vertex(vertex)
+                transformed_vertices.append(transformed_vertex)
+
+            mesh_data.from_pydata(transformed_vertices, [], rec.faces)
+
             mesh_data.update()
             # Create UV map if available.
             if rec.uvs and len(rec.uvs) == len(rec.vertices):
@@ -89,3 +97,30 @@ class MeshFactory:
         rb.linear_damping = phys.lin_damp
         rb.angular_damping = phys.ang_damp
         obj.select_set(False)
+
+    @staticmethod
+    def transform_vertex(vertex):
+        """
+        Trasforma un vertice dal sistema di coordinate OpenGL al sistema di coordinate Blender.
+
+        Args:
+            vertex (tuple): Coordinate originali del vertice (x, y, z)
+
+        Returns:
+            tuple: Coordinate trasformate del vertice
+        """
+        # Matrice di conversione (la stessa di OVOSceneBuilder)
+        C = mathutils.Matrix((
+            (1, 0, 0, 0),
+            (0, 0, 1, 0),
+            (0, -1, 0, 0),
+            (0, 0, 0, 1)
+        ))
+        C_inv = C.transposed()
+
+        # Converti il vertice in coordinate omogenee e applica la trasformazione inversa
+        v = mathutils.Vector((vertex[0], vertex[1], vertex[2], 1.0))
+        transformed = C_inv @ v  # Usa C_inv perché stiamo convertendo da OpenGL a Blender
+
+        # Ritorna come tupla senza la componente omogenea
+        return (transformed[0], transformed[1], transformed[2])

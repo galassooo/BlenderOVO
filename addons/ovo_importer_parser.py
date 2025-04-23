@@ -210,7 +210,13 @@ class OVOImporterParser:
         light_type = struct.unpack("<B", f.read(1))[0]
         color = struct.unpack("<3f", f.read(12))
         radius = struct.unpack("<f", f.read(4))[0]
-        direction = struct.unpack("<3f", f.read(12))
+
+        # Read the original direction from the file
+        dx, dy, dz = struct.unpack("<3f", f.read(12))
+
+        # Store the original direction for debugging
+        original_direction = (dx, dy, dz)
+
         cutoff = struct.unpack("<f", f.read(4))[0]
         spot_exp = struct.unpack("<f", f.read(4))[0]
         shadow = struct.unpack("<B", f.read(1))[0]
@@ -220,33 +226,11 @@ class OVOImporterParser:
         rec.light_type = light_type
         rec.color = color
         rec.radius = radius
-        rec.direction = direction
+        rec.direction = original_direction
         rec.cutoff = cutoff
         rec.spot_exponent = spot_exp
         rec.shadow = shadow
         rec.volumetric = volumetric
-
-        # Per luci direzionali (SUN), compensiamo la rotazione di -90° sull'asse X
-        # applicata durante l'esportazione
-        if light_type == LightType.DIRECTIONAL or light_type == LightType.SPOT:
-            # Direzione di default in Blender
-            default_dir = mathutils.Vector((0, 0, -1))
-
-            # Applica la rotazione di +90° sull'asse X alla direzione importata
-            # per compensare la rotazione di -90° applicata durante l'esportazione
-            conversion = mathutils.Matrix.Rotation(math.radians(90), 3, 'X')
-            corrected_dir = conversion @ mathutils.Vector(direction)
-
-            # Calcola il quaternione usando la direzione corretta
-            target_dir = corrected_dir.normalized()
-            print(f"[OVOImporter] Light '{light_name}' direction: raw={direction}, corrected={tuple(target_dir)}")
-
-            rec.light_quat = default_dir.rotation_difference(target_dir)
-        else:
-            # Per le altre luci (non direzionali), usiamo la direzione come è
-            default_dir = mathutils.Vector((0, 0, -1))
-            target_dir = mathutils.Vector(direction).normalized()
-            rec.light_quat = default_dir.rotation_difference(target_dir)
 
         return rec
 
