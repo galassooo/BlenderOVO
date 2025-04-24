@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER PARSER
-# --------------------------------------------------------
+# ================================================================
 # This module is the main parsing stage of your importer. It:
 #   1) Reads the entire .ovo file chunk-by-chunk using the OVOChunk class.
 #   2) Interprets each chunk (MATERIAL, NODE, LIGHT, MESH) by converting
@@ -10,30 +10,32 @@
 # All low-level utilities (e.g. half-float decoding and null-terminated string reading)
 # are imported from the utility module.
 # ================================================================
+
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import math
 import os
 import io
 import struct
 import mathutils
 
-# --------------------------------------------------------
-# IMPORTER IMPORTS
-# --------------------------------------------------------
 try:
     from .ovo_importer_utils import half_to_float, decode_half2x16, read_null_terminated_string
     from .ovo_importer_chunk import OVOChunk
     from .ovo_importer_node import OVOMaterial, NodeRecord, OVOPhysicsData
     from .ovo_types import ChunkType, LightType
+    from .ovo_log import log
 except ImportError:
-    # Fallback if running outside an addon environment.
     from ovo_importer_utils import half_to_float, decode_half2x16, read_null_terminated_string
     from ovo_importer_chunk import OVOChunk
     from ovo_importer_node import OVOMaterial, NodeRecord, OVOPhysicsData
     from ovo_types import ChunkType
+    from ovo_log import log
 
 
 # --------------------------------------------------------
-# CLASS: OVOImporterParser
+# OVOImporterParser
 # --------------------------------------------------------
 
 class OVOImporterParser:
@@ -57,10 +59,13 @@ class OVOImporterParser:
         :param filepath: Full path to the .ovo file to import.
         """
         self.filepath = filepath
-        self.chunks = []  # List to hold all chunks read from the file.
-        self.materials = {}  # Dictionary to map material names to OVOMaterial objects.
-        self.node_records = []  # List to hold NodeRecord objects (for nodes, lights, and meshes).
+        self.chunks = []
+        self.materials = {}
+        self.node_records = []
 
+    # --------------------------------------------------------
+    # Parse File
+    # --------------------------------------------------------
     def parse_file(self) -> bool:
         """
         Reads the .ovo file in its entirety, gathering chunks and interpreting them.
@@ -73,7 +78,7 @@ class OVOImporterParser:
         :return: True if the file was successfully read and parsed; otherwise, False.
         """
         if not os.path.isfile(self.filepath):
-            print(f"[OVOImporterParser] ERROR: File not found: {self.filepath}")
+            log(f"[OVOImporterParser] ERROR: File not found: {self.filepath}", category="ERROR")
             return False
 
         # Open file and read all chunks.
@@ -90,6 +95,9 @@ class OVOImporterParser:
 
         return True
 
+    # --------------------------------------------------------
+    # Parse Chunk
+    # --------------------------------------------------------
     def _parse_chunk(self, chunk: OVOChunk):
         """
         Dispatches the chunk to the appropriate parse method based on its ID.
@@ -117,12 +125,15 @@ class OVOImporterParser:
             mesh_rec = self._parse_mesh(chunk.data)
             self.node_records.append(mesh_rec)
         else:
-            print(f"[OVOImporterParser] WARNING: Unhandled chunk ID={chunk.chunk_id}")
+            log(f"[OVOImporterParser] WARNING: Unhandled chunk ID={chunk.chunk_id}", category="WARNING")
 
-    # --------------------------------------------------------
+    # ========================================================
     # Parsing Methods for Specific Chunk Types
-    # --------------------------------------------------------
+    # ========================================================
 
+    # --------------------------------------------------------
+    # Parse Material
+    # --------------------------------------------------------
     def _parse_material(self, data: bytes) -> OVOMaterial:
         """
         Parses a MATERIAL chunk (ChunkType.MATERIAL, typically ID=9).
@@ -156,8 +167,12 @@ class OVOImporterParser:
                 tname = None
             textures[t] = tname
 
+        log(f"Parsed material: '{name}' | BaseColor={base_color}, Roughness={roughness:.2f}, Metallic={metallic:.2f}",category="MATERIAL", indent=1)
         return OVOMaterial(name, base_color, roughness, metallic, transparency, emissive, textures)
 
+    # --------------------------------------------------------
+    # Parse Node
+    # --------------------------------------------------------
     def _parse_node(self, data: bytes) -> NodeRecord:
         """
         Parses a generic NODE chunk (ChunkType.NODE, ID=1).
@@ -174,16 +189,20 @@ class OVOImporterParser:
         f = io.BytesIO(data)
         node_name = read_null_terminated_string(f)
         mat_vals = struct.unpack("<16f", f.read(64))
-        # Build a 4x4 matrix as a list of 4-tuples (row-major order)
         raw_matrix = [mat_vals[i:i + 4] for i in range(0, 16, 4)]
         children_count = struct.unpack("<I", f.read(4))[0]
-        _ = read_null_terminated_string(f)  # Discard the target string
+        _ = read_null_terminated_string(f)
 
+        log(f"Parsed node: '{node_name}' | Children={children_count}", category="NODE", indent=1)
         return NodeRecord(node_name, "NODE", children_count, raw_matrix)
 
+    # --------------------------------------------------------
+    # Parse Light
+    # --------------------------------------------------------
     def _parse_light(self, data: bytes) -> NodeRecord:
         """
         Parses a LIGHT chunk (ChunkType.LIGHT, ID=16).
+
         Expected data:
           - Light name (null-terminated string)
           - 4x4 transformation matrix (16 floats, row-major)
@@ -205,12 +224,19 @@ class OVOImporterParser:
         mat_vals = struct.unpack("<16f", f.read(64))
         raw_matrix = [mat_vals[i:i + 4] for i in range(0, 16, 4)]
         children_count = struct.unpack("<I", f.read(4))[0]
-        _ = read_null_terminated_string(f)  # Skip target string
+        _ = read_null_terminated_string(f)
 
         light_type = struct.unpack("<B", f.read(1))[0]
         color = struct.unpack("<3f", f.read(12))
         radius = struct.unpack("<f", f.read(4))[0]
-        direction = struct.unpack("<3f", f.read(12))
+
+        # Read the original direction from the file
+        dx, dy, dz = struct.unpack("<3f", f.read(12))
+
+        # Store the original direction for debugging
+        original_direction = (dx, dy, dz)
+
+
         cutoff = struct.unpack("<f", f.read(4))[0]
         spot_exp = struct.unpack("<f", f.read(4))[0]
         shadow = struct.unpack("<B", f.read(1))[0]
@@ -220,36 +246,17 @@ class OVOImporterParser:
         rec.light_type = light_type
         rec.color = color
         rec.radius = radius
-        rec.direction = direction
+        rec.direction = original_direction
         rec.cutoff = cutoff
         rec.spot_exponent = spot_exp
         rec.shadow = shadow
         rec.volumetric = volumetric
 
-        # Per luci direzionali (SUN), compensiamo la rotazione di -90° sull'asse X
-        # applicata durante l'esportazione
-        if light_type == LightType.DIRECTIONAL or light_type == LightType.SPOT:
-            # Direzione di default in Blender
-            default_dir = mathutils.Vector((0, 0, -1))
-
-            # Applica la rotazione di +90° sull'asse X alla direzione importata
-            # per compensare la rotazione di -90° applicata durante l'esportazione
-            conversion = mathutils.Matrix.Rotation(math.radians(90), 3, 'X')
-            corrected_dir = conversion @ mathutils.Vector(direction)
-
-            # Calcola il quaternione usando la direzione corretta
-            target_dir = corrected_dir.normalized()
-            print(f"[OVOImporter] Light '{light_name}' direction: raw={direction}, corrected={tuple(target_dir)}")
-
-            rec.light_quat = default_dir.rotation_difference(target_dir)
-        else:
-            # Per le altre luci (non direzionali), usiamo la direzione come è
-            default_dir = mathutils.Vector((0, 0, -1))
-            target_dir = mathutils.Vector(direction).normalized()
-            rec.light_quat = default_dir.rotation_difference(target_dir)
-
         return rec
 
+    # --------------------------------------------------------
+    # Parse Mesh
+    # --------------------------------------------------------
     def _parse_mesh(self, data: bytes) -> NodeRecord:
         """
         Parses a MESH chunk (ChunkType.MESH, ID=18).
@@ -275,12 +282,12 @@ class OVOImporterParser:
         mvals = struct.unpack("<16f", f.read(64))
         raw_matrix = [mvals[i:i + 4] for i in range(0, 16, 4)]
         children_count = struct.unpack("<I", f.read(4))[0]
-        _ = read_null_terminated_string(f)  # Skip target string
+        _ = read_null_terminated_string(f)
         mesh_subtype = struct.unpack("<B", f.read(1))[0]
         material_name = read_null_terminated_string(f)
 
-        # Read bounding data (not used in scene building)
-        _ = struct.unpack("<f", f.read(4))[0]  # bounding sphere
+        # Read bounding data
+        _ = struct.unpack("<f", f.read(4))[0]
         _ = f.read(12)  # min box
         _ = f.read(12)  # max box
 
@@ -297,7 +304,7 @@ class OVOImporterParser:
         rec.lod_count = lod_count
 
         if lod_count == 0:
-            # This indicates an empty mesh.
+            log(f"Mesh '{mesh_name}' has no LODs — skipping geometry", category="MESH", indent=1)
             return rec
 
         # Read geometry: number of vertices and faces.
@@ -323,6 +330,8 @@ class OVOImporterParser:
         rec.vertices = vertices
         rec.faces = faces
         rec.uvs = uvs
+
+        log(f"Parsed mesh: '{mesh_name}' | Vertices: {vertex_count}, Faces: {face_count}", category="MESH", indent=1)
         return rec
 
     # --------------------------------------------------------
@@ -349,10 +358,10 @@ class OVOImporterParser:
         :return: An OVOPhysicsData instance with the parsed physics parameters.
         """
         obj_type = struct.unpack("<B", f.read(1))[0]
-        _ = f.read(1)  # contCollision (skip storing)
-        _ = f.read(1)  # collide_with_rb (skip storing)
+        _ = f.read(1)  # contCollision
+        _ = f.read(1)  # collide_with_rb
         hull_type = struct.unpack("<B", f.read(1))[0]
-        _ = f.read(12)  # mass center, not stored
+        _ = f.read(12)  # mass center
 
         mass, static_fric, dyn_fric, bounciness, lin_damp, ang_damp = struct.unpack("<6f", f.read(24))
         nr_hulls = struct.unpack("<I", f.read(4))[0]
@@ -370,4 +379,3 @@ class OVOImporterParser:
                 f.read(12)
 
         return OVOPhysicsData(obj_type, hull_type, mass, static_fric, dyn_fric, bounciness, lin_damp, ang_damp)
-
