@@ -41,38 +41,17 @@ class OVOMeshManager:
         """
         self.packer = packer
     
-    # --------------------------------------------------------
-    # Process Geometry
-    # --------------------------------------------------------
-    # In ovo_exporter_mesh.py - Modifica a process_mesh_geometry per supportare il flusso originale
 
-    def process_mesh_geometry(self, mesh, bm, uv_layer):
-        """
-        Processa la geometria della mesh e prepara i dati per l'esportazione.
-        
-        Args:
-            mesh: Mesh Blender da processare
-            bm: BMesh già creato dalla mesh
-            uv_layer: Layer UV da utilizzare
-            
-        Returns:
-            tuple: (vertices_data, face_indices, vertex_count, face_count)
-                vertices_data: Lista di tuple (posizione, normale, uv, tangente, sign)
-                face_indices: Lista di indici che formano le facce triangolate
-                vertex_count: Numero di vertici
-                face_count: Numero di facce triangolate
-        """
-        # Ottieni i poly_lstart per calcolare gli indici dei loop
-        poly_lstart = [p.loop_start for p in mesh.polygons]
-        
-        # Calcolo delle tangenti con gestione eccezioni
-        def safe_calc_tangents(src_mesh):
+    # --------------------------------------------------------
+    # Calculate tangents in safe mode for n-gons
+    # --------------------------------------------------------
+    def safe_calc_tangents(src_mesh):
             """
-            Restituisce (loop_tangent, loop_sign) anche se la mesh contiene n-gon.
-            La numerazione dei loop rimane identica a src_mesh.loops.
+            Returns (loop_tangent, loop_sign) even if the mesh contains n-gons.
+            Loop numbering remains identical to src_mesh.loops.
             """
             import bmesh
-            # copia in memoria – non tocca la mesh originale
+            # memory copy - doesn't touch the original mesh
             mesh_copy = src_mesh.copy()
 
             bm_calc = bmesh.new()
@@ -81,109 +60,13 @@ class OVOMeshManager:
             bm_calc.to_mesh(mesh_copy)
             bm_calc.free()
 
-            mesh_copy.calc_tangents()                # ora non lancia eccezioni
+            mesh_copy.calc_tangents()                # now it won't throw exceptions
             loop_tan  = [l.tangent.copy()   for l in mesh_copy.loops]
             loop_sign = [l.bitangent_sign   for l in mesh_copy.loops]
 
-            bpy.data.meshes.remove(mesh_copy)        # pulizia
+            bpy.data.meshes.remove(mesh_copy)        # cleanup
             return loop_tan, loop_sign
 
-        # Calculate tangents safely
-        loop_tangent = []
-        loop_sign = []
-        try:
-            # Try to calculate tangents directly
-            mesh.calc_tangents()
-            loop_tangent = [l.tangent.copy() for l in mesh.loops]
-            loop_sign = [l.bitangent_sign for l in mesh.loops]
-        except Exception as e:
-            print(f"      - mesh.calc_tangents() fallito: {str(e)}")
-            print("      - Uso fallback sicuro")
-            try:
-                # Use the safe method
-                loop_tangent, loop_sign = safe_calc_tangents(mesh)
-            except Exception as e:
-                print(f"      - Anche il fallback è fallito: {str(e)}")
-                # Create default values if both methods fail
-                print("      - Utilizzo valori di default per tangenti")
-                for _ in range(len(mesh.loops)):
-                    loop_tangent.append(mathutils.Vector((1.0, 0.0, 0.0)))
-                    loop_sign.append(1.0)
-        
-        # Lista per i dati dei vertici e indici delle facce
-        vertices_data = []  # [posizione, normale, uv, tangente, sign]
-        face_indices = []   # Indici per le facce triangolate
-        face_vertex_map = {}  # Mappa per ricordare quali vertici corrispondono a quali facce
-        
-        # Processamento delle facce originali
-        print("      - Processando le facce originali per vertici e normali di faccia")
-        for face_idx, face in enumerate(bm.faces):
-            # Calcola la normale della faccia (non quella interpolata ai vertici)
-            face_normal = face.normal.normalized()
-            
-            # Per ogni vertice in questa faccia
-            for loop_idx, loop in enumerate(face.loops):
-                vert_idx = loop.vert.index
-                pos = loop.vert.co
-                uv = loop[uv_layer].uv if uv_layer else mathutils.Vector((0.0, 0.0))
-
-                # Sicurezza per l'indice del loop
-                mesh_loop_index = poly_lstart[face_idx] + loop_idx if face_idx < len(poly_lstart) else 0
-                
-                # Controlla se il mesh_loop_index è valido
-                if mesh_loop_index < len(loop_tangent):
-                    bl_tangent = loop_tangent[mesh_loop_index]
-                    sign = loop_sign[mesh_loop_index]
-                else:
-                    # Fallback in caso di problemi con l'indice
-                    bl_tangent = mathutils.Vector((1.0, 0.0, 0.0))
-                    sign = 1.0
-
-                # Trasformazioni assi
-                transformed_pos  = mathutils.Vector((pos.x, pos.z, -pos.y))
-                transformed_norm = mathutils.Vector((face_normal.x, face_normal.z, -face_normal.y)).normalized()
-                transformed_tan  = mathutils.Vector((bl_tangent.x, bl_tangent.z, -bl_tangent.y)).normalized()
-
-                # Crea un indice unico per questo vertice nella faccia corrente
-                vertex_idx = len(vertices_data)
-                vertices_data.append((transformed_pos, transformed_norm, uv, transformed_tan, sign))
-                face_vertex_map[(face_idx, vert_idx)] = vertex_idx
-        
-        # Triangolazione manuale delle facce
-        print("      - Triangolazione manuale delle facce")
-        face_count = 0
-        for face_idx, face in enumerate(bm.faces):
-            # Se la faccia ha 4 vertici (quad)
-            if len(face.verts) == 4:
-                # Indici dei vertici nella lista vertices_data
-                v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
-                
-                # Triangola la faccia quad in modo coerente (0,1,2) e (0,2,3)
-                face_indices.extend([v_indices[0], v_indices[1], v_indices[2]])
-                face_indices.extend([v_indices[0], v_indices[2], v_indices[3]])
-                face_count += 2  # Aggiungiamo 2 triangoli
-            elif len(face.verts) == 3:
-                # Per le facce che sono già triangoli, usa direttamente i loro indici
-                v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
-                face_indices.extend(v_indices)
-                face_count += 1  # Aggiungiamo 1 triangolo
-            else:
-                # Per facce con più di 4 vertici (n-gon)
-                # Usa una triangolazione a ventaglio dal primo vertice
-                v0_idx = face_vertex_map.get((face_idx, face.verts[0].index), 0)
-                for i in range(1, len(face.verts) - 1):
-                    v1_idx = face_vertex_map.get((face_idx, face.verts[i].index), 0)
-                    v2_idx = face_vertex_map.get((face_idx, face.verts[i+1].index), 0)
-                    face_indices.extend([v0_idx, v1_idx, v2_idx])
-                    face_count += 1  # Aggiungiamo 1 triangolo
-        
-        # Restituisci i dati elaborati
-        vertex_count = len(vertices_data)
-        print(f"      - Vertici: {vertex_count}")
-        print(f"      - Facce triangolate: {face_count}")
-        
-        return vertices_data, face_indices, vertex_count, face_count
-    
     # --------------------------------------------------------
     # Write Mesh data
     # --------------------------------------------------------
