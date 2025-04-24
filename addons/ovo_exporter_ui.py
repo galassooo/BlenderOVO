@@ -1,24 +1,35 @@
+# ================================================================
+# EXPORTER UI MODULE
+# ================================================================
+# This module defines the Blender Operator (OVO_PT_export_main)
+# responsible for exporting the current scene to an OVO file.
+# It also adds the operator to the File > Export menu.
+# ================================================================
+
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import bpy
-import os
-import traceback
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator, Panel
 
-# Importa il core dell'esportatore
 try:
-    # Per quando eseguito come addon
     from .ovo_exporter_core import OVO_Exporter
+    from .ovo_log import log
 except ImportError:
-    # Per quando eseguito direttamente
     from ovo_exporter_core import OVO_Exporter
+    from ovo_log import log
 
-
-class OVO_PT_export_main(Operator, ExportHelper):
+# --------------------------------------------------------
+# OT_ExportOVO
+# --------------------------------------------------------
+class OT_ExportOVO(Operator, ExportHelper):
+    """Operator to export the current scene to an OVO file."""
     bl_idname = "export_scene.ovo"
     bl_label = "Export OVO"
-    filename_ext = ".ovo"
 
+    filename_ext = ".ovo"
     filter_glob: StringProperty(
         default="*.ovo",
         options={'HIDDEN'},
@@ -43,7 +54,6 @@ class OVO_PT_export_main(Operator, ExportHelper):
         default=True,
     )
 
-    # Aggiunto nuovo parametro per il flip delle texture
     flip_textures: BoolProperty(
         name="Flip Textures Vertically",
         description="Flip textures vertically during export (recommended for most engines)",
@@ -51,6 +61,7 @@ class OVO_PT_export_main(Operator, ExportHelper):
     )
 
     def draw(self, context):
+        """Layout for export options."""
         layout = self.layout
 
         # Include/Exclude Objects
@@ -67,6 +78,11 @@ class OVO_PT_export_main(Operator, ExportHelper):
         box.prop(self, "flip_textures")
 
     def execute(self, context):
+        """
+       Execute the export:
+         - Instantiate OVO_Exporter with current options.
+         - Run export() and return FINISHED or CANCELLED.
+       """
         try:
             exporter = OVO_Exporter(
                 context,
@@ -74,10 +90,9 @@ class OVO_PT_export_main(Operator, ExportHelper):
                 use_mesh=self.use_mesh,
                 use_light=self.use_light,
                 use_legacy_compression=self.use_legacy_compression,
-                flip_textures=self.flip_textures  # Passa il nuovo parametro all'esportatore
+                flip_textures=self.flip_textures
             )
 
-            # Esegui l'export
             if exporter.export():
                 self.report({'INFO'}, "Export completed successfully")
                 return {'FINISHED'}
@@ -92,24 +107,30 @@ class OVO_PT_export_main(Operator, ExportHelper):
 
 
 def menu_func_export(self, context):
-    # define export menu item
-    self.layout.operator(OVO_PT_export_main.bl_idname, text="OverView Object (.ovo)")
+    """Add the export option to the File > Export menu."""
+    self.layout.operator(OT_ExportOVO.bl_idname, text="OverView Object (.ovo)")
 
-
+# --------------------------------------------------------
+# REGISTER / UNREGISTER EXPORTER
+# --------------------------------------------------------
 def register():
+    """Register the exporter operator and menu entry."""
     try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
-        print("Operator già registrato, deregistrato prima di una nuova registrazione.")
+        bpy.utils.unregister_class(OT_ExportOVO)
+        log("Operator was already registered; unregistering first.", category="")
     except RuntimeError:
-        print("Operator non era registrato, procedo normalmente.")
+        log("Operator not registered; proceeding normally.", category="")
 
-    bpy.utils.register_class(OVO_PT_export_main)
+    bpy.utils.register_class(OT_ExportOVO)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    log("OVO Exporter registered successfully.", category="")
 
 
 def unregister():
+    """Unregister the exporter operator and remove menu entry."""
     try:
-        bpy.utils.unregister_class(OVO_PT_export_main)
+        bpy.utils.unregister_class(OT_ExportOVO)
         bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+        log("OVO Exporter unregistered successfully.", category="")
     except RuntimeError:
-        print("Operator non era registrato, skipping unregister.")
+        log("Operator not registered; skipping unregister.", category="")
