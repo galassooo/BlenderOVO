@@ -322,6 +322,7 @@ class OVO_Exporter:
     # --------------------------------------------------------
     # Write Mesh Chunk
     # --------------------------------------------------------
+        
     def write_mesh_chunk(self, file, obj, num_children):
         """
         Writes a mesh chunk to the OVO file.
@@ -334,19 +335,20 @@ class OVO_Exporter:
         chunk_data = b''
 
         # Mesh name
-        log(f"[OVOExporter.write_mesh_chunk] Processing mesh: '{obj.name}'", category="MESH", indent=2)
+        print(f"\n    [OVOExporter.write_mesh_chunk] Processing mesh: '{obj.name}'")
         chunk_data += self.packer.pack_string(obj.name)
 
-        # Obj matrix
+        # In write_mesh_chunk
         if obj.parent:
             local_bl = obj.matrix_local  
         else:
             local_bl = obj.matrix_world
 
+        # Save matrix without additional conversions
         final_matrix = self.convert_openGl(local_bl)
         chunk_data += self.packer.pack_matrix(final_matrix)
 
-        # Children data
+        # Children and material data
         chunk_data += struct.pack('I', num_children)
         chunk_data += self.packer.pack_string("[none]")
         chunk_data += struct.pack('B', 0)
@@ -356,36 +358,34 @@ class OVO_Exporter:
         if obj.material_slots and obj.material_slots[0].material:
             material_name = obj.material_slots[0].material.name
             chunk_data += self.packer.pack_string(material_name)
-            log(f"- Material: '{material_name}'", category="MESH", indent=3)
+            print(f"      - Material: '{material_name}'")
         else:
             chunk_data += self.packer.pack_string("[none]")
-            log("- No material assigned", category="MESH", indent=3)
+            print("      - No material assigned")
 
         # Get mesh data from evaluated object
-        log("- Getting mesh data", category="MESH", indent=3)
+        print("      - Getting mesh data")
         depsgraph = bpy.context.evaluated_depsgraph_get()
         obj_eval = obj.evaluated_get(depsgraph)
         mesh = obj_eval.to_mesh()
 
-        # bounding box and radius
-        log("- Calculating bounding box and radius", category="MESH", indent=3)
         radius, min_box, max_box = self.mesh_manager.get_box_radius(mesh.vertices)
 
+        # Write bounding box information
         chunk_data += struct.pack('f', radius)
         chunk_data += self.packer.pack_vector3(min_box)
         chunk_data += self.packer.pack_vector3(max_box)
 
         # Process physics data
-        log("- Processing physics data", category="MESH", indent=3)
+        print("      - Processing physics data")
         chunk_data = self.physics_manager.write_physics_data(obj, chunk_data)
         lod_manager = OVOLodManager()
 
-        # Check if should create lods
+        # Check face count to determine if we need multi-LOD
         should_multi_lod = lod_manager.should_generate_multi_lod(obj)
 
         if should_multi_lod:
-            log("- Generating multiple LODs for high-poly mesh", category="MESH", indent=3)
-
+            print("      - Generating multiple LODs for high-poly mesh")
             # Generate LOD meshes
             lod_meshes = lod_manager.generate_lod_meshes(obj)
 
@@ -395,29 +395,31 @@ class OVO_Exporter:
             # Clean up LOD meshes
             lod_manager.cleanup_lod_meshes(lod_meshes)
         else:
-            # Single lod
-            log("- LOD count: 1 (single LOD)", category="MESH", indent=3)
+            # Original single LOD code path
+            # Write LODs (1 = single LOD)
             chunk_data += struct.pack('I', 1)
+            print("      - LOD count: 1 (single LOD)")
 
             # Create BMesh for the mesh
             import bmesh
             bm = bmesh.new()
             try:
-                # Ensure mesh obj is valid
+                # Assicuriamoci che la mesh sia ancora valida
                 if mesh is not None:
-                    #If the mesh is invalid, create a new one
+                    # Crea una copia temporanea
                     temp_mesh = bpy.data.meshes.new(f"temp_mesh_{obj.name}")
                     temp_mesh.from_mesh(mesh)
                     
+                    # Ora usa il BMesh con la mesh temporanea
                     bm.from_mesh(temp_mesh)
                     bmesh.ops.triangulate(bm, faces=bm.faces)
                     
                     # Get UV layer
                     uv_layer = bm.loops.layers.uv.active
                     if uv_layer:
-                        log(f"- UV layer found: '{mesh.uv_layers.active.name if mesh.uv_layers.active else 'default'}'", category="MESH", indent=3)
+                        print(f"      - UV layer found: '{mesh.uv_layers.active.name if mesh.uv_layers.active else 'default'}'")
                     else:
-                        log("- WARNING: No UV layer found", category="MESH", indent=3)
+                        print("      - WARNING: No UV layer found")
                     
                     # Process mesh geometry
                     vertices_data, face_indices, vertex_count, face_count = self.mesh_manager.process_mesh_geometry(temp_mesh, bm, uv_layer)
@@ -428,26 +430,26 @@ class OVO_Exporter:
                     # Cleanup
                     bpy.data.meshes.remove(temp_mesh)
                 else:
-                    #Fallback, if the mesh is invalid, write 0 vertices and 0 faces
-                    log("- WARNING: mesh is invalid, writing empty geometry", category="MESH", indent=3)
-                    chunk_data += struct.pack('I', 0)
-                    chunk_data += struct.pack('I', 0)
-
+                    # Fallback: se la mesh è invalida, scrivi 0 vertici e 0 facce
+                    print("      - WARNING: mesh is invalid, writing empty geometry")
+                    chunk_data += struct.pack('I', 0)  # vertex_count = 0
+                    chunk_data += struct.pack('I', 0)  # face_count = 0
             except Exception as e:
-                log(f"- ERROR processing mesh: {str(e)}", category="MESH", indent=3)
-                chunk_data += struct.pack('I', 0)
-                chunk_data += struct.pack('I', 0)
+                print(f"      - ERROR processing mesh: {str(e)}")
+                # Fallback: in caso di errore, scrivi 0 vertici e 0 facce
+                chunk_data += struct.pack('I', 0)  # vertex_count = 0
+                chunk_data += struct.pack('I', 0)  # face_count = 0
             finally:
                 bm.free()
 
         # Write the complete mesh chunk
-        log("- Writing mesh chunk to file", category="MESH", indent=3)
+        print("      - Writing mesh chunk to file")
         self.packer.write_chunk_header(file, ChunkType.MESH, len(chunk_data))
         file.write(chunk_data)
 
         # Cleanup
         obj_eval.to_mesh_clear()
-        log(f"[OVOExporter.write_mesh_chunk] Completed: '{obj.name}'", category="MESH", indent=3)
+        print(f"    [OVOExporter.write_mesh_chunk] Completed: '{obj.name}'")
 
     # --------------------------------------------------------
     # Write Light Chunk
