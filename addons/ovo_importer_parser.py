@@ -287,9 +287,9 @@ class OVOImporterParser:
         material_name = read_null_terminated_string(f)
 
         # Read bounding data
-        _ = struct.unpack("<f", f.read(4))[0]
-        _ = f.read(12)  # min box
-        _ = f.read(12)  # max box
+        bounding_radius = struct.unpack("<f", f.read(4))[0]
+        min_box = f.read(12)  # min box
+        max_box = f.read(12)  # max box
 
         physics_flag = struct.unpack("<B", f.read(1))[0]
         physics_data = None
@@ -302,6 +302,11 @@ class OVOImporterParser:
         rec.material_name = material_name
         rec.physics_data = physics_data
         rec.lod_count = lod_count
+
+        # Store bounding box data
+        rec.bounding_radius = bounding_radius
+        rec.min_box = min_box
+        rec.max_box = max_box
 
         if lod_count == 0:
             log(f"Mesh '{mesh_name}' has no LODs — skipping geometry", category="MESH", indent=1)

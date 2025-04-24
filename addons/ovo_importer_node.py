@@ -138,5 +138,10 @@ class NodeRecord:
         self.volumetric = 0
         self.light_quat = None
 
+        # Bounding box data
+        self.bounding_radius = 0.0
+        self.min_box = (0.0, 0.0, 0.0)
+        self.max_box = (0.0, 0.0, 0.0)
+
     def __repr__(self):
         return f"NodeRecord(name={self.name}, type={self.node_type}, children_count={self.children_count})"

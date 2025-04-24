@@ -40,6 +40,15 @@ class OT_ImportOVO(Operator, ImportHelper):
         default=True
     )
 
+    def draw(self, context):
+        """Layout for import options."""
+        layout = self.layout
+
+        # Texture Settings
+        box = layout.box()
+        box.label(text="Texture Settings:", icon='TEXTURE')
+        box.prop(self, "flip_textures")
+
     def execute(self, context):
         """
         Execute the import:

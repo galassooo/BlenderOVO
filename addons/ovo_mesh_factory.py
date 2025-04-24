@@ -71,6 +71,16 @@ class MeshFactory:
         if not mesh_obj.users_collection:
             bpy.context.collection.objects.link(mesh_obj)
 
+            # Store bounding box data as custom properties if available
+        if hasattr(rec, 'bounding_radius') and hasattr(rec, 'min_box') and hasattr(rec, 'max_box'):
+            mesh_obj["ovo_bounding_radius"] = rec.bounding_radius
+            mesh_obj["ovo_min_box"] = rec.min_box
+            mesh_obj["ovo_max_box"] = rec.max_box
+
+            # Log the bounding box information
+            log(f"Bounding data: Radius={rec.bounding_radius}, Min={rec.min_box}, Max={rec.max_box}", category="MESH",
+                indent=2)
+
         # Assign material if available.
         if rec.material_name and rec.material_name in materials:
             ovo_mat = materials[rec.material_name]
