@@ -403,7 +403,7 @@ class OVO_Exporter:
         else:
             log("- WARNING: No UV layer found", category="MESH", indent=3)
 
-        radius, min_box, max_box = self.mesh_manager.get_box_radius(mesh.verices)
+        radius, min_box, max_box = self.mesh_manager.get_box_radius(mesh.vertices)
 
         # Write bounding box information
         chunk_data += struct.pack('f', radius)
