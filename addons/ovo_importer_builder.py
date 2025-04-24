@@ -190,20 +190,5 @@ class OVOSceneBuilder:
             # 2) similarity transform OpenGL→Blender
             transformed_mat = C_inv @ mat @ C
 
-            # --------------- Logs ---------------
-            log(f"Object: {rec.name}", category="", indent=1)
-            log("Original matrix", category="", indent=1)
-            for row in mat:
-                log(f"{row[0]:.4f}, {row[1]:.4f}, {row[2]:.4f}, {row[3]:.4f}", category="", indent=2)
-
-            log("Transformed matrix", category="", indent=1)
-            for row in transformed_mat:
-                log(f"{row[0]:.4f}, {row[1]:.4f}, {row[2]:.4f}, {row[3]:.4f}", category="", indent=2)
-
-            loc, rot, scale = transformed_mat.decompose()
-            log(f"Position: {loc}", category="", indent=1)
-            log(f"Rotation: {rot}", category="", indent=1)
-            log(f"Scale: {scale}", category="", indent=1)
-
             # 3) Apply the matrix_basis
             obj.matrix_basis = transformed_mat
