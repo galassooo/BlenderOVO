@@ -6,7 +6,13 @@
 # indentation, and ANSI coloring across modules.
 # ================================================================
 
-from .ovo_types import GREEN, YELLOW, BLUE, RED, MAGENTA,RESET, BOLD
+# --------------------------------------------------------
+# Imports
+# --------------------------------------------------------
+try:
+    from .ovo_types import GREEN, YELLOW, BLUE, RED, MAGENTA,RESET, BOLD
+except ImportError:
+    from ovo_types import GREEN, YELLOW, BLUE, RED, MAGENTA, RESET, BOLD
 
 # --------------------------------------------------------
 # Logging Function
