@@ -52,10 +52,6 @@ class LightFactory:
         if rec.light_type in [1, 2] and rec.direction:
             # Transform direction from OpenGL coordinates to Blender coordinates
             transformed_direction = LightFactory.transform_direction(rec.direction)
-
-            # Per debug
-            print(f"Luce '{rec.name}' direzione (originale): {rec.direction}")
-            print(f"Luce '{rec.name}' direzione (trasformata): {transformed_direction}")
         return light_obj
 
     @staticmethod
