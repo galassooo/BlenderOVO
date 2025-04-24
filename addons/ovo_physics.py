@@ -1,25 +1,33 @@
-"""
-ovo_physics.py
-Manages physics for OVO export.
-This module handles extracting and serializing physics properties from Blender objects.
-"""
+# ================================================================
+# PHYSICS MANAGER
+# ================================================================
+# Manages physics properties for OVO export.
+# Extracts physics data from Blender objects and serializes it
+# into the OVO chunk format using OVOPacker.
+# ================================================================
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import struct
 import mathutils
 
 try:
-    # When executed as addon
     from .ovo_types import HullType
     from .ovo_packer import OVOPacker
+    from .ovo_log import log
 except ImportError:
-    # When executed directly
     from ovo_types import HullType
     from ovo_packer import OVOPacker
+    from ovo_log import log
 
-
+# --------------------------------------------------------
+# OVO Physics Manager
+# --------------------------------------------------------
 class OVOPhysicsManager:
     """
-    Manages physics properties of objects for OVO export.
+    Manages physics properties of Blender objects for the OVO export process.
+    Handles physics type, hull shape, damping, friction, mass, and serialization.
     """
 
     def __init__(self, packer):
@@ -31,6 +39,9 @@ class OVOPhysicsManager:
         """
         self.packer = packer
 
+    # --------------------------------------------------------
+    # Has Physics
+    # --------------------------------------------------------
     def has_physics(self, obj):
         """
         Checks if an object has physics properties.
@@ -43,6 +54,9 @@ class OVOPhysicsManager:
         """
         return obj.rigid_body is not None
 
+    # --------------------------------------------------------
+    # Get Physics Type
+    # --------------------------------------------------------
     def get_physics_type(self, obj):
         """
         Gets the physics type of the object.
@@ -61,6 +75,9 @@ class OVOPhysicsManager:
         else:
             return 0  # Static (default)
 
+    # --------------------------------------------------------
+    # Get Hull Type
+    # --------------------------------------------------------
     def get_hull_type(self, obj):
         """
         Gets the hull collision type of the object.
@@ -91,6 +108,9 @@ class OVOPhysicsManager:
 
         return hull_type
 
+    # --------------------------------------------------------
+    # Get Mass Center
+    # --------------------------------------------------------
     def get_mass_center(self, obj):
         """
         Calculates the center of mass of the object.
@@ -105,6 +125,9 @@ class OVOPhysicsManager:
         local_bbox_center = sum((mathutils.Vector(b) for b in obj.bound_box), mathutils.Vector()) / 8
         return local_bbox_center
 
+    # --------------------------------------------------------
+    # Write Physics Data
+    # --------------------------------------------------------
     def write_physics_data(self, obj, chunk_data):
         """
         Writes physics data to the chunk.
@@ -146,10 +169,10 @@ class OVOPhysicsManager:
         }
         hull_name = hull_names.get(hull_type, "UNKNOWN")
 
-        print(f"    [OVOPhysicsManager] Object '{obj.name}' physics properties:")
-        print(f"      - Type: {'DYNAMIC' if physics_type == 1 else 'STATIC'}")
-        print(f"      - Hull: {hull_name} (code: {hull_type})")
-        print(f"      - Active: {obj.rigid_body.enabled}")
+        log(f"[OVOPhysicsManager] Object '{obj.name}' physics settings:", category="MESH", indent=1)
+        log(f"- Type: {'DYNAMIC' if physics_type else 'STATIC'}", category="MESH", indent=2)
+        log(f"- Hull: {hull_name} (code: {hull_type})", category="MESH", indent=2)
+        log(f"- Active: {obj.rigid_body.enabled}", category="MESH", indent=2)
 
         # Pack control bytes
         chunk_data += struct.pack('B', physics_type)
@@ -160,20 +183,20 @@ class OVOPhysicsManager:
         # Center of mass
         mass_center = self.get_mass_center(obj)
         chunk_data += self.packer.pack_vector3(mass_center)
-        print(f"      - Mass center: ({mass_center.x:.3f}, {mass_center.y:.3f}, {mass_center.z:.3f})")
+        log(f"- Mass center: ({mass_center.x:.3f}, {mass_center.y:.3f}, {mass_center.z:.3f})", category="MESH",indent=2)
 
-        # Physics properties - use safe getters to avoid AttributeError
+        # Physics properties
         mass = getattr(obj.rigid_body, 'mass', 1.0)
         static_friction = getattr(obj.rigid_body, 'friction', 0.5)
-        dynamic_friction = static_friction  # Use the same value
+        dynamic_friction = static_friction
         bounciness = getattr(obj.rigid_body, 'restitution', 0.0)
         linear_damping = getattr(obj.rigid_body, 'linear_damping', 0.04)
         angular_damping = getattr(obj.rigid_body, 'angular_damping', 0.1)
 
-        print(f"      - Mass: {mass:.2f}")
-        print(f"      - Friction: {static_friction:.2f}")
-        print(f"      - Bounciness: {bounciness:.2f}")
-        print(f"      - Damping: linear={linear_damping:.2f}, angular={angular_damping:.2f}")
+        log(f"- Mass: {mass:.2f}", category="MESH", indent=2)
+        log(f"- Friction: {static_friction:.2f}", category="MESH", indent=2)
+        log(f"- Bounciness: {bounciness:.2f}", category="MESH", indent=2)
+        log(f"- Damping: linear={linear_damping:.2f}, angular={angular_damping:.2f}", category="MESH", indent=2)
 
         # Write values
         chunk_data += struct.pack('f', mass)
@@ -192,5 +215,5 @@ class OVOPhysicsManager:
         chunk_data += struct.pack('Q', 0)  # physObj pointer
         chunk_data += struct.pack('Q', 0)  # hull pointer
 
-        print(f"    [OVOPhysicsManager] Physics data written for '{obj.name}'")
+        log(f"Physics data written for '{obj.name}'", category="MESH", indent=1)
         return chunk_data

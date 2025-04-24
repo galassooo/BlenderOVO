@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER CORE
-# --------------------------------------------------------
+# ================================================================
 # This module provides a high-level "OVOImporter" class that:
 #   1) Instantiates the parser (OVOImporterParser) to read the .ovo file.
 #   2) Instantiates the scene builder (OVOSceneBuilder) to construct the
@@ -8,19 +8,24 @@
 #   3) Orchestrates the overall process and returns a status to Blender.
 # ================================================================
 
+# --------------------------------------------------------
+# Imports
+# --------------------------------------------------------
 import os
 import bpy
 
-# Attempt to import from relative paths if running as an addon.
 try:
     from .ovo_importer_parser import OVOImporterParser
     from .ovo_importer_builder import OVOSceneBuilder
+    from .ovo_log import log
 except ImportError:
-    # Fallback for non-addon environments.
     from ovo_importer_parser import OVOImporterParser
     from ovo_importer_builder import OVOSceneBuilder
+    from ovo_log import log
 
-
+# --------------------------------------------------------
+# OVO Importer Class
+# --------------------------------------------------------
 class OVOImporter:
     """
     High-level importer class that is called by the UI operator to import an OVO file.
@@ -41,6 +46,9 @@ class OVOImporter:
         # Set True by default and overridden by the UI operator
         self.flip_textures = True
 
+    # --------------------------------------------------------
+    # Import Scene
+    # --------------------------------------------------------
     def import_scene(self):
         """
         Main entry point to import the OVO file into Blender.
@@ -55,28 +63,27 @@ class OVOImporter:
 
         :return: A dictionary with the status, either {'FINISHED'} or {'CANCELLED'}.
         """
-        print(f"[OVOImporter] Starting import of {self.filepath}")
+        log("", category="")
+        log("============================================================", category="")
+        log(f"[OVOImporter] Starting import of {self.filepath}", category="")
 
         # Step 1: Parse the file.
         parser = OVOImporterParser(self.filepath)
         if not parser.parse_file():
-            print("[OVOImporter] Error: parse_file() returned False - file not found or error occurred.")
+            log("[OVOImporter] Error: parse_file() returned False - file not found or error occurred.",category="ERROR", indent=1)
             return {'CANCELLED'}
 
         # Step 2: Build the Blender scene.
-        # Assumes texture files are located in the same directory as the .ovo file.
         texture_dir = os.path.dirname(self.filepath)
         builder = OVOSceneBuilder(
             node_records=parser.node_records,
             materials=parser.materials,
             texture_directory=texture_dir,
-            flip_textures=self.flip_textures  # Pass the flip_textures flag to the builder
+            flip_textures=self.flip_textures
         )
 
         builder.build_scene()
 
-        # Texture flipping is now handled by the MaterialFactory directly,
-        # so we don't need to call an external operator
-
-        print("[OVOImporter] Import completed successfully.")
+        log("[OVOImporter] Import completed successfully.", category="NODE")
+        log("============================================================\n", category="")
         return {'FINISHED'}

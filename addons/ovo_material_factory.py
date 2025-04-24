@@ -6,18 +6,22 @@
 # Blender Material with nodes, textures, and proper linking.
 # ================================================================
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import os
 import bpy
 
-# Import texture flipper
 try:
-    # For when running as an addon
     from .ovo_texture_flipper import OVOTextureFlipper
+    from .ovo_log import log
 except ImportError:
-    # For when running directly
     from ovo_texture_flipper import OVOTextureFlipper
+    from ovo_log import log
 
-
+# --------------------------------------------------------
+# Material Factory
+# --------------------------------------------------------
 class MaterialFactory:
     """
     MaterialFactory converts an OVOMaterial data object into a Blender Material.
@@ -60,12 +64,12 @@ class MaterialFactory:
         def load_and_link(tex_key, bsdf_input, set_non_color=True, node_label=""):
             tex_file = ovo_material.textures.get(tex_key)
             if not tex_file or tex_file == "[none]":
-                print(f"[MaterialFactory] No {tex_key} texture defined for material '{ovo_material.name}'")
+                log(f"No {tex_key} texture defined for material '{ovo_material.name}'", category="MATERIAL", indent=1)
                 return
 
             tex_path = os.path.join(texture_directory, tex_file)
             if not os.path.isfile(tex_path):
-                print(f"[MaterialFactory] {tex_key.capitalize()} texture '{tex_file}' not found at '{tex_path}'")
+                log(f"{tex_key.capitalize()} texture '{tex_file}' not found at '{tex_path}'", category="WARNING", indent=1)
                 return
 
             # Flag to track if we've created a flipped version
@@ -81,23 +85,24 @@ class MaterialFactory:
                         texture_base, texture_ext = os.path.splitext(texture_name)
                         flipped_path = os.path.join(texture_directory, f"{texture_base}_flipped{texture_ext}")
 
-                        print(f"[MaterialFactory] Flipping {tex_key} texture '{tex_file}'")
+                        log(f"[MaterialFactory] Flipping {tex_key} texture '{tex_file}'", category="MATERIAL", indent=1)
                         try:
                             OVOTextureFlipper.flip_dds_texture(tex_path, flipped_path)
                             tex_path = flipped_path  # Use the flipped texture
                             flipped_version_created = True
                             # Add to our tracking set so we know this is a flipped texture
                             MaterialFactory.flipped_textures.add(flipped_path)
-                            print(f"[MaterialFactory] Texture flipped successfully to '{flipped_path}'")
-                        except Exception as ex:
-                            print(f"[MaterialFactory] Failed to flip texture: {ex}")
-                            print(f"[MaterialFactory] Using original texture instead")
-                            tex_path = original_path  # Revert to original path
 
-                # Try to load the image (either original or flipped)
-                print(f"[MaterialFactory] Loading texture from: '{tex_path}'")
+                            log(f"[MaterialFactory] Texture flipped successfully: '{flipped_path}'", category="MATERIAL", indent=2)
+                        except Exception as ex:
+                            log(f"[MaterialFactory] Failed to flip texture: {ex}", category="ERROR", indent=2)
+                            log("[MaterialFactory] Using original texture instead", category="WARNING", indent=2)
+                            tex_path = original_path
+
+                # Try to load the image
+                log(f"[MaterialFactory] Loading texture from: '{tex_path}'", category="MATERIAL", indent=2)
                 img = bpy.data.images.load(tex_path, check_existing=True)
-                print(f"[MaterialFactory] Texture loaded successfully: '{img.name}'")
+                log(f"[MaterialFactory] Texture loaded successfully: '{img.name}'", category="MATERIAL", indent=2)
 
                 # Create and configure the texture node
                 tex_node = nodes.new('ShaderNodeTexImage')
@@ -108,18 +113,21 @@ class MaterialFactory:
 
                 # Connect the texture to the shader
                 links.new(tex_node.outputs["Color"], bsdf.inputs[bsdf_input])
-                print(f"[MaterialFactory] Connected '{tex_node.label}' to '{bsdf_input}'")
+                log(f"[MaterialFactory] Connected '{tex_node.label}' to '{bsdf_input}'", category="MATERIAL", indent=2)
 
             except Exception as ex:
-                print(f"[MaterialFactory] Error processing {tex_key} texture '{tex_path}': {ex}")
+                log(f"[MaterialFactory] Error processing {tex_key} texture '{tex_path}': {ex}", category="ERROR", indent=2)
+
                 # If we created a flipped version but failed to use it, we can clean it up
                 if flipped_version_created and not os.path.samefile(tex_path, flipped_path):
                     try:
                         os.remove(flipped_path)
                         MaterialFactory.flipped_textures.discard(flipped_path)
-                        print(f"[MaterialFactory] Removed unused flipped texture: '{flipped_path}'")
+                        log(f"[MaterialFactory] Removed unused flipped texture: '{flipped_path}'", category="MATERIAL", indent=2)
                     except:
                         pass
+
+        # --- Load and assign maps ---
 
         # --- Albedo Map ---
         load_and_link("albedo", "Base Color", set_non_color=False, node_label="Albedo Texture")
@@ -129,7 +137,7 @@ class MaterialFactory:
         if normal_file and normal_file != "[none]":
             normal_path = os.path.join(texture_directory, normal_file)
             if not os.path.isfile(normal_path):
-                print(f"[MaterialFactory] Normal texture '{normal_file}' not found at '{normal_path}'")
+                log(f"[MaterialFactory] Normal texture '{normal_file}' not found at '{normal_path}'", category="WARNING", indent=1)
             else:
                 # Flag to track if we've created a flipped version
                 flipped_version_created = False
@@ -144,23 +152,24 @@ class MaterialFactory:
                             texture_base, texture_ext = os.path.splitext(texture_name)
                             flipped_path = os.path.join(texture_directory, f"{texture_base}_flipped{texture_ext}")
 
-                            print(f"[MaterialFactory] Flipping normal map '{normal_file}'")
+                            log(f"[MaterialFactory] Flipping normal map '{normal_file}'", category="MATERIAL", indent=1)
                             try:
                                 OVOTextureFlipper.flip_dds_texture(normal_path, flipped_path)
                                 normal_path = flipped_path  # Use the flipped texture
                                 flipped_version_created = True
                                 # Add to our tracking set
                                 MaterialFactory.flipped_textures.add(flipped_path)
-                                print(f"[MaterialFactory] Normal map flipped successfully to '{flipped_path}'")
+                                log(f"[MaterialFactory] Normal map flipped: '{flipped_path}'", category="MATERIAL", indent=2)
                             except Exception as ex:
-                                print(f"[MaterialFactory] Failed to flip normal map: {ex}")
-                                print(f"[MaterialFactory] Using original normal map instead")
-                                normal_path = original_path  # Revert to original
+                                log(f"[MaterialFactory] Failed to flip normal map: {ex}", category="ERROR", indent=2)
+                                log("[MaterialFactory] Using original normal map instead", category="WARNING", indent=2)
+                                normal_path = original_path
 
                     # Try to load the normal map
-                    print(f"[MaterialFactory] Loading normal map from: '{normal_path}'")
+
+                    log(f"[MaterialFactory] Loading normal map: '{normal_path}'", category="MATERIAL", indent=2)
                     normal_img = bpy.data.images.load(normal_path, check_existing=True)
-                    print(f"[MaterialFactory] Normal map loaded successfully: '{normal_img.name}'")
+                    log(f"[MaterialFactory] Normal map loaded: '{normal_img.name}'", category="MATERIAL", indent=2)
 
                     # Create the texture node for the normal map
                     normal_tex_node = nodes.new('ShaderNodeTexImage')
@@ -175,16 +184,16 @@ class MaterialFactory:
                     # Connect the nodes
                     links.new(normal_tex_node.outputs["Color"], normal_map_node.inputs["Color"])
                     links.new(normal_map_node.outputs["Normal"], bsdf.inputs["Normal"])
-                    print(f"[MaterialFactory] Normal map node setup complete")
+                    log("[MaterialFactory] Normal map node setup complete", category="MATERIAL", indent=2)
 
                 except Exception as ex:
-                    print(f"[MaterialFactory] Error processing normal map: {ex}")
+                    log(f"[MaterialFactory] Error processing normal map: {ex}", category="ERROR", indent=2)
                     # If we created a flipped version but failed to use it, we can clean it up
                     if flipped_version_created and not os.path.samefile(normal_path, flipped_path):
                         try:
                             os.remove(flipped_path)
                             MaterialFactory.flipped_textures.discard(flipped_path)
-                            print(f"[MaterialFactory] Removed unused flipped texture: '{flipped_path}'")
+                            log(f"[MaterialFactory] Removed unused flipped texture: '{flipped_path}'", category="MATERIAL", indent=2)
                         except:
                             pass
 
@@ -210,12 +219,12 @@ class MaterialFactory:
                 tex_name = os.path.basename(tex_path)
                 if tex_name in bpy.data.images:
                     # If it's still in use, don't delete it yet
-                    print(f"[MaterialFactory] Texture '{tex_name}' still in use, not deleting")
+                    log(f"[MaterialFactory] Texture '{tex_name}' still in use, not deleting", category="MATERIAL", indent=1)
                     continue
 
                 if os.path.exists(tex_path):
                     os.remove(tex_path)
-                    print(f"[MaterialFactory] Removed flipped texture: '{tex_path}'")
+                    log(f"[MaterialFactory] Removed flipped texture: '{tex_path}'", category="MATERIAL", indent=1)
                 MaterialFactory.flipped_textures.remove(tex_path)
             except Exception as ex:
-                print(f"[MaterialFactory] Error removing flipped texture '{tex_path}': {ex}")
+                log(f"[MaterialFactory] Error removing flipped texture '{tex_path}': {ex}", category="ERROR", indent=1)

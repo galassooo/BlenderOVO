@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER NODES & MATERIALS
-# --------------------------------------------------------
+# ================================================================
 # This module defines the core data structures used by the importer
 # to represent data extracted from the .ovo file.
 #
@@ -15,6 +15,9 @@
 # create actual Blender objects.
 # ================================================================
 
+# --------------------------------------------------------
+# OVOMaterial
+# --------------------------------------------------------
 class OVOMaterial:
     """
     Basic container for material data.
@@ -26,8 +29,7 @@ class OVOMaterial:
         metallic (float): Metallic value.
         transparency (float): Transparency (alpha) value.
         emissive (tuple): A 3-tuple (ex, ey, ez) representing emissive color.
-        textures (dict): Dictionary containing texture file names keyed by type
-                         (e.g., "albedo", "normal", etc.).
+        textures (dict): Dictionary containing texture file names keyed by type (e.g., "albedo", "normal", etc.).
     """
 
     def __init__(self, name, base_color, roughness, metallic, transparency, emissive, textures):
@@ -40,7 +42,9 @@ class OVOMaterial:
         self.textures = textures
         self.blender_material = None
 
-
+# --------------------------------------------------------
+# OVOPhysicsData
+# --------------------------------------------------------
 class OVOPhysicsData:
     """
     Container for physics parameters parsed from a mesh chunk.
@@ -66,7 +70,9 @@ class OVOPhysicsData:
         self.lin_damp = lin_damp
         self.ang_damp = ang_damp
 
-
+# --------------------------------------------------------
+# NodeRecord
+# --------------------------------------------------------
 class NodeRecord:
     """
     Unified container for node data extracted from the .ovo file.
@@ -109,12 +115,11 @@ class NodeRecord:
         self.children_count = children_count
         self.raw_matrix = raw_matrix
 
-        # Placeholder for the Blender object that will be created later
+        # Hierarchy / reference placeholders
         self.blender_object = None
-        # Parent relationship for hierarchy (to be assigned in the builder)
         self.parent = None
 
-        # For MESH type nodes
+        # Mesh-specific
         self.material_name = None
         self.vertices = []
         self.faces = []
@@ -122,7 +127,7 @@ class NodeRecord:
         self.physics_data = None
         self.lod_count = 0
 
-        # For LIGHT type nodes
+        # Light-specific
         self.light_type = None
         self.color = None
         self.radius = 0.0

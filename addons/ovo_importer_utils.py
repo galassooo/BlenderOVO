@@ -1,6 +1,6 @@
-# --------------------------------------------------------
+# ================================================================
 #  OVO IMPORTER UTILS
-# --------------------------------------------------------
+# ================================================================
 # This module provides pure utility functions that are used by
 # the importer. It includes:
 #   - half_to_float: Converts a 16-bit half-precision float to a Python float.
@@ -12,11 +12,15 @@
 # code clean and modular.
 # ================================================================
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import struct
 import bpy
-import numpy as np
 
-
+# --------------------------------------------------------
+# Utility Methods
+# --------------------------------------------------------
 def half_to_float(h: int) -> float:
     """
     Convert a 16-bit half-precision float (stored as an int) to a Python float.

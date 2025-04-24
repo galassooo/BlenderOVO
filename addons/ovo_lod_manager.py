@@ -1,25 +1,46 @@
-"""
-ovo_lod_manager.py
-Manages Level of Detail (LOD) generation for the OVO exporter.
-"""
+# ================================================================
+# LOD MANAGER
+# ================================================================
+# Manages Level of Detail (LOD) generation for the OVO exporter.
+# Generates simplified mesh representations based on face count
+# thresholds using Blender's decimate modifier and triangulation.
+# ================================================================
 
+# --------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------
 import bpy
 import bmesh
 from mathutils import Vector
 
+try:
+    from .ovo_log import log
+except ImportError:
+    from ovo_log import log
 
+# --------------------------------------------------------
+# LOD Manager
+# --------------------------------------------------------
 class OVOLodManager:
     """
-    Class that manages LOD (Level of Detail) generation for the OVO exporter.
+    Manages automatic generation of LOD (Level of Detail) meshes
+    using face-count analysis and Blender's Decimate modifier.
+
+    If the mesh exceeds a configured face threshold, multiple simplified
+    versions (LODs) are generated and exported.
     """
 
     def __init__(self):
         """
-        Initialize the LOD manager.
+        Initializes the LOD Manager with face count thresholds
+        and decimation ratios for generating multiple LODs.
         """
         self.LOD_FACE_THRESHOLD = 300000  # Threshold for multi-LOD generation
         self.LOD_RATIOS = [1.0, 0.8, 0.5, 0.3, 0.1]  # Ratios for LOD levels
 
+    # --------------------------------------------------------
+    # Should Generate Multi-LOD
+    # --------------------------------------------------------
     def should_generate_multi_lod(self, obj):
         """
         Determines if multiple LODs should be generated for the object.
@@ -46,7 +67,7 @@ class OVOLodManager:
         bm.free()
         obj_eval.to_mesh_clear()
 
-        print(f"      - Face count: {face_count}")
+        log(f"Face count: {face_count}", category="MESH", indent=2)
         return face_count > self.LOD_FACE_THRESHOLD
 
     def generate_lod_meshes(self, obj):
@@ -61,11 +82,11 @@ class OVOLodManager:
         """
         if not self.should_generate_multi_lod(obj):
             # If below threshold, return a single LOD
-            print("      - Generating single LOD (below threshold)")
+            log("Generating single LOD (below threshold)", category="MESH", indent=1)
             return self._generate_single_lod(obj)
 
         # Generate multiple LODs
-        print("      - Generating multiple LODs")
+        log("Generating multiple LODs", category="MESH", indent=1)
         return self._generate_multiple_lods(obj)
 
     def _generate_single_lod(self, obj):
@@ -123,7 +144,7 @@ class OVOLodManager:
                         uv_name = mesh.uv_layers.active.name
                         uv_layer = bm.loops.layers.uv.new(uv_name)
 
-                    print(f"      - LOD ratio {ratio:.2f}: {len(bm.faces)} faces (original)")
+                    log(f"LOD ratio {ratio:.2f}: {len(bm.faces)} faces (original)", category="MESH", indent=2)
                     lod_meshes.append(bm)
                     continue
 
@@ -162,7 +183,7 @@ class OVOLodManager:
                                     uv_data = lod_obj.data.uv_layers.active.data[mesh_loop.index]
                                     loop[uv_layer].uv = uv_data.uv
 
-                print(f"      - LOD ratio {ratio:.2f}: {len(bm.faces)} faces")
+                log(f"LOD ratio {ratio:.2f}: {len(bm.faces)} faces", category="MESH", indent=2)
                 lod_meshes.append(bm)
 
                 # Remove the LOD object
@@ -178,6 +199,9 @@ class OVOLodManager:
 
         return lod_meshes
 
+    # --------------------------------------------------------
+    # Cleanup LOD Meshes
+    # --------------------------------------------------------
     def cleanup_lod_meshes(self, lod_meshes):
         """
         Cleans up the LOD meshes.
