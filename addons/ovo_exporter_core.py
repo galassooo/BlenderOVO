@@ -265,15 +265,13 @@ class OVO_Exporter:
         chunk_data += self.packer.pack_string(obj.name)
 
 
+        # In write_mesh_chunk
         if obj.parent:
-            parent_world_blender = obj.parent.matrix_world
-            child_world_blender = obj.matrix_world
-            local_matrix_blender = parent_world_blender.inverted() @ child_world_blender
+            local_bl = obj.matrix_local  
         else:
-            local_matrix_blender = obj.matrix_world.copy()
+            local_bl = obj.matrix_world
 
-        # Save matrix without additional conversions
-        final_matrix = self.convert_openGl(local_matrix_blender, isParent=obj.parent is None)
+        final_matrix = self.convert_openGl(local_bl)
         chunk_data += self.packer.pack_matrix(final_matrix)
 
         # Pack the matrix
@@ -300,7 +298,7 @@ class OVO_Exporter:
         file.write(chunk_data)
         print(f"    [OVOExporter.write_node_chunk] Completed: '{obj.name}'")
 
-    def convert_openGl(self, matrix, isParent=False):
+    def convert_openGl(self, matrix):
 
         matrix_copy = matrix.copy()
         C = mathutils.Matrix(((1,0,0,0),
@@ -309,121 +307,7 @@ class OVO_Exporter:
                       (0,0,0,1)))
         C_inv = C.transposed() 
 
-        # Crea una nuova matrice dalla trasposizione
         return C @ matrix_copy @ C_inv
-    
-
-    def calculate_tangents(self, bm, uv_layer):
-        """
-        Calcola le tangenti per ogni vertice usando l'approccio di Mittring.
-        
-        Args:
-            bm: BMesh object
-            uv_layer: Layer UV del BMesh
-            
-        Returns:
-            dict: Dizionario che mappa indici dei vertici alle loro tangenti
-        """
-        # Se non c'è un UV layer, non possiamo calcolare tangenti significative
-        if not uv_layer:
-            print("      - AVVISO: Nessun UV layer, utilizzando tangenti di default")
-            # Mappa i vertici alle tangenti di default
-            return {v.index: mathutils.Vector((0.0, 1.0, 0.0)) for v in bm.verts}
-        
-        # Step 1: Calcola le tangenti per faccia
-        face_tangents = {}
-        
-        for face in bm.faces:
-            # Skip facce degenerate
-            if len(face.verts) < 3 or len(face.loops) < 3:
-                continue
-            
-            # Ottieni i primi 3 vertici e le loro UV
-            v0 = face.verts[0].co
-            v1 = face.verts[1].co
-            v2 = face.verts[2].co
-            
-            uv0 = face.loops[0][uv_layer].uv
-            uv1 = face.loops[1][uv_layer].uv
-            uv2 = face.loops[2][uv_layer].uv
-            
-            # Calcola i due edge del triangolo
-            edge1 = v1 - v0
-            edge2 = v2 - v0
-            
-            # Calcola le differenze nelle coordinate UV
-            delta_uv1 = uv1 - uv0
-            delta_uv2 = uv2 - uv0
-            
-            # Calcola il determinante
-            den = delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x
-            
-            # Evita divisione per zero
-            if abs(den) < 0.0001:
-                # Per una faccia con UV degenerate, usa una tangente basata sulla normale
-                normal = face.normal.normalized()
-                face_tangents[face.index] = mathutils.Vector((0.0, 1.0, 0.0))
-                continue
-            
-            # Calcola la tangente per questa faccia usando la formula standard
-            r = 1.0 / den
-            tangent = (delta_uv2.y * edge1 - delta_uv1.y * edge2) * r
-            
-            # Normalizza la tangente
-            try:
-                tangent.normalize()
-            except:
-                # Fallback in caso di normalizzazione fallita
-                tangent = mathutils.Vector((1.0, 0.0, 0.0))
-            
-            # Salva la tangente per questa faccia
-            face_tangents[face.index] = tangent
-        
-        # Step 3: Calcola tangenti per vertice mediante media ponderata
-        vertex_tangents = {}
-        
-        for vert in bm.verts:
-            # Inizializza un vettore per accumulare le tangenti
-            acc_tangent = mathutils.Vector((0.0, 0.0, 0.0))
-            
-            # Accumula le tangenti dalle facce adiacenti
-            for face in vert.link_faces:
-                if face.index in face_tangents:
-                    # Ponderiamo per l'angolo del vertice nella faccia
-                    # Troviamo l'angolo appropriato
-                    for loop in face.loops:
-                        if loop.vert == vert:
-                            # Qui potresti calcolare l'angolo per una ponderazione più precisa
-                            # Per semplicità, usiamo un peso uniforme
-                            acc_tangent += face_tangents[face.index]
-                            break
-            
-            # Normalizza la tangente accumulata
-            if acc_tangent.length > 0.0001:
-                acc_tangent.normalize()
-            else:
-                # Fallback se non ci sono tangenti valide
-                acc_tangent = mathutils.Vector((1.0, 0.0, 0.0))
-            
-            # Ortogonalizza rispetto alla normale (Gram-Schmidt)
-            normal = vert.normal.normalized()
-            acc_tangent = (acc_tangent - normal * normal.dot(acc_tangent))
-            
-            # Normalizza di nuovo
-            if acc_tangent.length > 0.0001:
-                acc_tangent.normalize()
-            else:
-                # Se la tangente è diventata quasi zero, crea una tangente perpendicolare alla normale
-                if abs(normal.y) > 0.9:
-                    acc_tangent = mathutils.Vector((1.0, 0.0, 0.0))
-                else:
-                    acc_tangent = mathutils.Vector((0.0, 1.0, 0.0))
-                acc_tangent = (acc_tangent - normal * normal.dot(acc_tangent)).normalized()
-            
-            # Salva la tangente finale
-            vertex_tangents[vert.index] = acc_tangent
-        
-        return vertex_tangents
 
     def write_mesh_chunk(self, file, obj, num_children):
         """
@@ -532,15 +416,38 @@ class OVO_Exporter:
         else:
             print("      - WARNING: No UV layer found")
 
-        # Calculate bounding box in world space
-        bbox_corners = [final_matrix @ mathutils.Vector(corner) for corner in obj.bound_box]
-        min_box = mathutils.Vector(map(min, *((v.x, v.y, v.z) for v in bbox_corners)))
-        max_box = mathutils.Vector(map(max, *((v.x, v.y, v.z) for v in bbox_corners)))
-        radius = (max_box - min_box).length / 2
+        # NUOVO CALCOLO DEL BOUNDING BOX E RAGGIO IN OBJECT COORDINATES
+        # Calcola bounding box e raggio direttamente dai vertici della mesh in coordinate locali
+        min_box = mathutils.Vector((float('inf'), float('inf'), float('inf')))
+        max_box = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
+        max_distance_squared = 0.0
+        center = mathutils.Vector((0, 0, 0))  # Center is at origin in object space
+        
+        # Trova min e max per ogni asse e la distanza massima dal centro
+        for v in mesh.vertices:
+            # Calcola il bounding box
+            position = v.co
+            # Converti coordinate (x, y, z) a (x, z, -y) per il formato OVO
+            pos_transformed = mathutils.Vector((position.x, position.z, -position.y))
+            
+            min_box.x = min(min_box.x, pos_transformed.x)
+            min_box.y = min(min_box.y, pos_transformed.y)
+            min_box.z = min(min_box.z, pos_transformed.z)
+            
+            max_box.x = max(max_box.x, pos_transformed.x)
+            max_box.y = max(max_box.y, pos_transformed.y)
+            max_box.z = max(max_box.z, pos_transformed.z)
+            
+            # Calcola il raggio come distanza massima dal centro
+            dist_squared = pos_transformed.length_squared
+            max_distance_squared = max(max_distance_squared, dist_squared)
+        
+        # Il raggio è la radice quadrata della distanza massima al quadrato
+        radius = math.sqrt(max_distance_squared)
 
-        print(f"      - Bounding radius: {radius:.4f}")
-        print(f"      - Bounding box min: ({min_box.x:.4f}, {min_box.y:.4f}, {min_box.z:.4f})")
-        print(f"      - Bounding box max: ({max_box.x:.4f}, {max_box.y:.4f}, {max_box.z:.4f})")
+        print(f"      - Bounding radius (object space): {radius:.4f}")
+        print(f"      - Bounding box min (object space): ({min_box.x:.4f}, {min_box.y:.4f}, {min_box.z:.4f})")
+        print(f"      - Bounding box max (object space): ({max_box.x:.4f}, {max_box.y:.4f}, {max_box.z:.4f})")
 
         # Write bounding box information
         chunk_data += struct.pack('f', radius)
@@ -554,6 +461,12 @@ class OVO_Exporter:
 
         # Check face count to determine if we need multi-LOD
         should_multi_lod = lod_manager.should_generate_multi_lod(obj)
+
+        # Inizializza le variabili per evitare UnboundLocalError
+        vertex_count = 0
+        face_count = 0
+        vertices_data = []
+        face_indices = []
 
         if should_multi_lod:
             print("      - Generating multiple LODs for high-poly mesh")
@@ -648,26 +561,26 @@ class OVO_Exporter:
             chunk_data += struct.pack('I', vertex_count)
             chunk_data += struct.pack('I', face_count)
 
+        # Questa parte si eseguirà solo se non siamo in modalità multi-LOD
+        if not should_multi_lod:
+            # Modifica la scrittura dei vertici
+            print(f"      - Scrittura {vertex_count} vertici")
+            # Nella parte di scrittura dei vertici
+            for pos, norm, uv, tan, sign in vertices_data:
+                chunk_data += self.packer.pack_vector3(pos)
+                chunk_data += self.packer.pack_normal(norm)
+                chunk_data += self.packer.pack_uv(uv)
 
-        # Modifica la scrittura dei vertici
-        print(f"      - Scrittura {vertex_count} vertici")
-        # Nella parte di scrittura dei vertici
-        for pos, norm, uv, tan, sign in vertices_data:
-            chunk_data += self.packer.pack_vector3(pos)
-            chunk_data += self.packer.pack_normal(norm)
-            chunk_data += self.packer.pack_uv(uv)
+                # --- scrivi la tangente ---
+                chunk_data += self.packer.pack_tangent(tan)
 
-            # --- scrivi la tangente ---
-            chunk_data += self.packer.pack_tangent(tan)
-
-             # Scrivi gli indici delle facce
-
-        print(f"      - Scrittura {face_count} facce triangolate")
-        for i in range(0, len(face_indices), 3):
-            # Assicurati di non superare i limiti dell'array
-            if i + 2 < len(face_indices):
-                for j in range(3):
-                    chunk_data += struct.pack('I', face_indices[i + j])
+            # Scrivi gli indici delle facce
+            print(f"      - Scrittura {face_count} facce triangolate")
+            for i in range(0, len(face_indices), 3):
+                # Assicurati di non superare i limiti dell'array
+                if i + 2 < len(face_indices):
+                    for j in range(3):
+                        chunk_data += struct.pack('I', face_indices[i + j])
 
         # Write the complete mesh chunk
         print("      - Writing mesh chunk to file")
@@ -701,86 +614,140 @@ class OVO_Exporter:
         for lod_index, bm in enumerate(lod_meshes):
             print(f"      - Processing LOD {lod_index + 1}/{lod_count}")
 
-            # Collect UV data for vertex-face pairs
-            vertex_face_uvs = {}  # (vertex_idx, face_idx) -> UV
-            vertices_data = []  # Final list of vertices
-            vertex_map = {}  # Map (vertex_idx, uv_key) -> new_vertex_idx
+            # Convertiamo il BMesh in una mesh temporanea di Blender per calcolare le tangenti
+            temp_mesh = bpy.data.meshes.new(f"temp_lod_{lod_index}")
+            bm.to_mesh(temp_mesh)
+            
+            # Calcolo delle tangenti con gestione eccezioni identica alla funzione principale
+            def safe_calc_tangents(src_mesh):
+                """
+                Restituisce (loop_tangent, loop_sign) anche se la mesh contiene n-gon.
+                La numerazione dei loop rimane identica a src_mesh.loops.
+                """
+                import bmesh
+                # copia in memoria – non tocca la mesh originale
+                mesh_copy = src_mesh.copy()
 
-            # Get the UV layer for this specific BMesh
+                bm_calc = bmesh.new()
+                bm_calc.from_mesh(mesh_copy)
+                bmesh.ops.triangulate(bm_calc, faces=bm_calc.faces)
+                bm_calc.to_mesh(mesh_copy)
+                bm_calc.free()
+
+                mesh_copy.calc_tangents()                # ora non lancia eccezioni
+                loop_tan  = [l.tangent.copy()   for l in mesh_copy.loops]
+                loop_sign = [l.bitangent_sign   for l in mesh_copy.loops]
+
+                bpy.data.meshes.remove(mesh_copy)        # pulizia
+                return loop_tan, loop_sign
+
+            try:
+                temp_mesh.calc_tangents()
+                loop_tangent = [l.tangent.copy()  for l in temp_mesh.loops]
+                loop_sign    = [l.bitangent_sign  for l in temp_mesh.loops]
+            except RuntimeError:
+                print(f"      - LOD {lod_index + 1}: mesh.calc_tangents() fallito: uso fallback sicuro")
+                loop_tangent, loop_sign = safe_calc_tangents(temp_mesh)
+            
+            # Ottieni gli indici di inizio dei loop per ogni poligono
+            poly_lstart = [p.loop_start for p in temp_mesh.polygons]
+
+            # Get the UV layer
             uv_layer = bm.loops.layers.uv.active
             if uv_layer:
-                # Collect UVs
-                for face in bm.faces:
-                    for loop in face.loops:
-                        try:
-                            vertex_face_uvs[(loop.vert.index, face.index)] = loop[uv_layer].uv
-                        except Exception as e:
-                            # If we run into an error, just use default UVs
-                            print(f"      - Warning: UV access error in LOD {lod_index + 1}: {e}")
-                            vertex_face_uvs[(loop.vert.index, face.index)] = mathutils.Vector((0.0, 0.0))
+                print(f"      - LOD {lod_index + 1}: UV layer found: '{temp_mesh.uv_layers.active.name if temp_mesh.uv_layers.active else 'default'}'")
+            else:
+                print(f"      - LOD {lod_index + 1}: WARNING - No UV layer found")
 
-            # Process vertices
-            for vert in bm.verts:
-                # Find unique UVs for this vertex
-                vert_uvs = set()
-                for face in vert.link_faces:
-                    if (vert.index, face.index) in vertex_face_uvs:
-                        uv = vertex_face_uvs[(vert.index, face.index)]
-                        vert_uvs.add((round(uv.x, 5), round(uv.y, 5)))
+            # Lista per i dati dei vertici e indici delle facce
+            vertices_data = []  # [posizione, normale, uv, tangente, sign]
+            face_indices = []   # Indici per le facce triangolate
+            face_vertex_map = {}  # Mappa per ricordare quali vertici corrispondono a quali facce
 
-                # If no UVs found (can happen in decimated meshes), add a default UV
-                if not vert_uvs and vert.link_faces:
-                    vert_uvs.add((0.0, 0.0))
-
-                # Create a new vertex for each unique UV
-                for uv_key in vert_uvs:
-                    new_idx = len(vertices_data)
-                    vertices_data.append((vert.co, vert.normal, mathutils.Vector(uv_key)))
-                    vertex_map[(vert.index, uv_key)] = new_idx
-
-            # Write vertex and face counts
-            chunk_data += struct.pack('I', len(vertices_data))
-            chunk_data += struct.pack('I', len(bm.faces))
-
-            print(f"      - LOD {lod_index + 1}: {len(vertices_data)} vertices, {len(bm.faces)} faces")
-
-            # Write vertex data
-            for pos, norm, uv in vertices_data:
-                # Apply the same transformation as in write_mesh_chunk
-                transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
-                chunk_data += self.packer.pack_vector3(transformed_pos)
+            # Processamento delle facce (esattamente come in write_mesh_chunk)
+            print(f"      - LOD {lod_index + 1}: Processando le facce originali")
+            for face_idx, face in enumerate(bm.faces):
+                # Calcola la normale della faccia (non quella interpolata ai vertici)
+                face_normal = face.normal.normalized()
                 
-                transformed_norm = mathutils.Vector((norm.x, norm.z, -norm.y)).normalized()
-                chunk_data += self.packer.pack_normal_tangent(transformed_norm)
-                
-                chunk_data += self.packer.pack_uv(uv)
-                chunk_data += struct.pack('I', 0)  # tangent
+                # Per ogni vertice in questa faccia
+                for loop_idx, loop in enumerate(face.loops):
+                    vert_idx = loop.vert.index
+                    pos = loop.vert.co
+                    uv = loop[uv_layer].uv if uv_layer else mathutils.Vector((0.0, 0.0))
 
-            # Write face indices
-            for face in bm.faces:
-                for loop in face.loops:
-                    # Get UV for this vertex-face pair
-                    uv_key = (0.0, 0.0)  # Default in case we can't find UV
-
-                    if (loop.vert.index, face.index) in vertex_face_uvs:
-                        uv = vertex_face_uvs[(loop.vert.index, face.index)]
-                        uv_key = (round(uv.x, 5), round(uv.y, 5))
-
-                    # Get the new vertex index
-                    if (loop.vert.index, uv_key) in vertex_map:
-                        new_idx = vertex_map[(loop.vert.index, uv_key)]
-                        chunk_data += struct.pack('I', new_idx)
+                    # Ottieni indice del loop nella mesh temporanea
+                    mesh_loop_index = poly_lstart[face_idx] + loop_idx
+                    if mesh_loop_index < len(loop_tangent):
+                        bl_tangent = loop_tangent[mesh_loop_index]
+                        sign = loop_sign[mesh_loop_index]
                     else:
-                        # Fallback for cases where exact UV match isn't found
-                        fallback_keys = [k for k in vertex_map.keys() if k[0] == loop.vert.index]
-                        if fallback_keys:
-                            new_idx = vertex_map[fallback_keys[0]]
-                            chunk_data += struct.pack('I', new_idx)
-                        else:
-                            # This should rarely happen
-                            print(
-                                f"      - WARNING: No mapping found for vertex {loop.vert.index} in LOD {lod_index + 1}")
-                            chunk_data += struct.pack('I', 0)  # Use first vertex as fallback
+                        # Fallback in caso di problemi con l'indice
+                        bl_tangent = mathutils.Vector((1.0, 0.0, 0.0))
+                        sign = 1.0
+
+                    # Trasforma le coordinate secondo le regole di OVO (x, z, -y)
+                    transformed_pos = mathutils.Vector((pos.x, pos.z, -pos.y))
+                    transformed_norm = mathutils.Vector((face_normal.x, face_normal.z, -face_normal.y)).normalized()
+                    transformed_tan = mathutils.Vector((bl_tangent.x, bl_tangent.z, -bl_tangent.y)).normalized()
+
+                    # Crea un indice unico per questo vertice nella faccia corrente
+                    vertex_idx = len(vertices_data)
+                    vertices_data.append((transformed_pos, transformed_norm, uv, transformed_tan, sign))
+                    face_vertex_map[(face_idx, vert_idx)] = vertex_idx
+
+            # Triangolazione manuale delle facce, esattamente come in write_mesh_chunk
+            print(f"      - LOD {lod_index + 1}: Triangolazione manuale delle facce")
+            face_count = 0
+            for face_idx, face in enumerate(bm.faces):
+                # Se la faccia ha 4 vertici (quad)
+                if len(face.verts) == 4:
+                    # Indici dei vertici nella lista vertices_data
+                    v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
+                    
+                    # Triangola la faccia quad in modo coerente (0,1,2) e (0,2,3)
+                    face_indices.extend([v_indices[0], v_indices[1], v_indices[2]])
+                    face_indices.extend([v_indices[0], v_indices[2], v_indices[3]])
+                    face_count += 2  # Aggiungiamo 2 triangoli
+                elif len(face.verts) == 3:
+                    # Per le facce che sono già triangoli, usa direttamente i loro indici
+                    v_indices = [face_vertex_map.get((face_idx, v.index), 0) for v in face.verts]
+                    face_indices.extend(v_indices)
+                    face_count += 1  # Aggiungiamo 1 triangolo
+                else:
+                    # Per facce con più di 4 vertici (n-gon)
+                    # Usa una triangolazione a ventaglio dal primo vertice
+                    v0_idx = face_vertex_map.get((face_idx, face.verts[0].index), 0)
+                    for i in range(1, len(face.verts) - 1):
+                        v1_idx = face_vertex_map.get((face_idx, face.verts[i].index), 0)
+                        v2_idx = face_vertex_map.get((face_idx, face.verts[i+1].index), 0)
+                        face_indices.extend([v0_idx, v1_idx, v2_idx])
+                        face_count += 1  # Aggiungiamo 1 triangolo
+
+            # Scrivi il numero di vertici e facce
+            vertex_count = len(vertices_data)
+            print(f"      - LOD {lod_index + 1}: {vertex_count} vertici, {face_count} facce triangolate")
+            chunk_data += struct.pack('I', vertex_count)
+            chunk_data += struct.pack('I', face_count)
+
+            # Scrivi i dati dei vertici
+            print(f"      - LOD {lod_index + 1}: Scrittura {vertex_count} vertici")
+            for pos, norm, uv, tan, sign in vertices_data:
+                chunk_data += self.packer.pack_vector3(pos)
+                chunk_data += self.packer.pack_normal(norm)
+                chunk_data += self.packer.pack_uv(uv)
+                chunk_data += self.packer.pack_tangent(tan)
+
+            # Scrivi gli indici delle facce
+            print(f"      - LOD {lod_index + 1}: Scrittura {face_count} facce triangolate")
+            for i in range(0, len(face_indices), 3):
+                # Assicurati di non superare i limiti dell'array
+                if i + 2 < len(face_indices):
+                    for j in range(3):
+                        chunk_data += struct.pack('I', face_indices[i + j])
+                        
+            # Cleanup della mesh temporanea
+            bpy.data.meshes.remove(temp_mesh)
 
         return chunk_data
     def write_light_chunk(self, file, obj, num_children):
@@ -820,28 +787,15 @@ class OVO_Exporter:
         # Get position and apply it to the matrix
         # Calcola e salva la matrice completa, non solo la traslazione
         # Matrix conversion
+        # In write_mesh_chunk
         if obj.parent:
-            matrix = obj.parent.matrix_world.inverted() @ obj.matrix_world
-            local_matrix = self.convert_openGl(matrix, isParent=False)
+            local_bl = obj.matrix_local  
         else:
-            print("      - No parent (root object)")
-            matrix = obj.matrix_world.copy()
-            local_matrix = self.convert_openGl(matrix, isParent=True)
+            local_bl = obj.matrix_world
 
-
-        def debug_print_matrix(matrix):
-            print("\n[DEBUG] Matrix values with indices:")
-            for row in range(4):
-                for col in range(4):
-                    val = matrix[row][col]
-                    print(f"  m[{row}][{col}] = {val:.6f}")
-            print("\n[DEBUG] Matrix full:")
-            for row in matrix:
-                print(f"  ({row[0]: .6f}, {row[1]: .6f}, {row[2]: .6f}, {row[3]: .6f})")
-
-        final_final_matrix = (local_matrix)
-        chunk_data += self.packer.pack_matrix(final_final_matrix)
-        debug_print_matrix(final_final_matrix)
+        # Save matrix without additional conversions
+        local_matrix = self.convert_openGl(local_bl)
+        chunk_data += self.packer.pack_matrix(local_matrix)
 
         # Number of children
         chunk_data += struct.pack('I', num_children)

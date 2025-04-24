@@ -17,7 +17,7 @@ class OVOLodManager:
         """
         Initialize the LOD manager.
         """
-        self.LOD_FACE_THRESHOLD = 300000  # Threshold for multi-LOD generation
+        self.LOD_FACE_THRESHOLD = 20000  # Threshold for multi-LOD generation
         self.LOD_RATIOS = [1.0, 0.8, 0.5, 0.3, 0.1]  # Ratios for LOD levels
 
     def should_generate_multi_lod(self, obj):
