@@ -45,7 +45,7 @@ class OVOMeshManager:
     # --------------------------------------------------------
     # Calculate tangents in safe mode for n-gons
     # --------------------------------------------------------
-    def safe_calc_tangents(src_mesh):
+    def safe_calc_tangents(self, src_mesh):
             """
             Returns (loop_tangent, loop_sign) even if the mesh contains n-gons.
             Loop numbering remains identical to src_mesh.loops.
